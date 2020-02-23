@@ -692,6 +692,9 @@ class InvHSRNet(tf.keras.Model):
             b = HaarDownsampling(current_channel)
             self.operations.append(b)
             current_channel *= 4
+            if use_inv_conv:
+                b = InvConv(current_channel)
+                self.operations.append(b)
             for _ in range(self.block_num[i]):
                 b = InvBlockExp(current_channel, channel_out[i], blk_type, num_filters)
                 self.operations.append(b)
@@ -711,6 +714,8 @@ class InvHSRNet(tf.keras.Model):
             scnt = 0
             for cnt in range(self.upscale_log):
                 bcnt = self.block_num[cnt] + 1
+                if self.use_inv_conv:
+                    bcnt += 1
                 for i in range(bcnt):
                     # xx = self.operations.get_layer(index=(scnt + i))(xx, rev)
                     xx = self.operations[scnt + i](xx, rev)
@@ -724,6 +729,8 @@ class InvHSRNet(tf.keras.Model):
                 scnt = len(self.operations) - (self.block_num[-1] + 1)
                 for cnt in reversed(range(self.upscale_log)):
                     bcnt = self.block_num[cnt] + 1
+                    if self.use_inv_conv:
+                        bcnt += 1
                     if xx.get_shape()[-1] != 1:
                         xx = tf.concat([xx, x[cnt]], -1)
                     for i in reversed(range(bcnt)):
