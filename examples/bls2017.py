@@ -662,7 +662,7 @@ class InvConv(tf.keras.layers.Layer):
             return out
         else:
             _w = tf.matrix_inverse(self.w)
-            _w = tf.reshpae(_w, [1, 1] + self.w_shape)
+            _w = tf.reshape(_w, [1, 1] + self.w_shape)
             out = tf.nn.conv2d(x, _w, [1, 1, 1, 1],
                     'SAME', data_format='NHWC')
             return out
@@ -733,6 +733,8 @@ class InvHSRNet(tf.keras.Model):
                         bcnt += 1
                     if xx.get_shape()[-1] != 1:
                         xx = tf.concat([xx, x[cnt]], -1)
+                    if self.use_inv_conv and cnt == self.upscale_log - 1:
+                        xx = self.inv_conv(xx, rev)
                     for i in reversed(range(bcnt)):
                         xx = self.operations[scnt + i](xx, rev)
                     out.append(xx)
