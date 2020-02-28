@@ -47,7 +47,7 @@ import tensorflow_compression as tfc
 
 from tensorflow.python import debug as tf_debug
 
-epsilon = 1e-8
+epsilon = 1e-10
 
 BATCH_SIZE = 8
 
@@ -562,11 +562,11 @@ class InvBlockExp(tf.keras.layers.Layer):
         x2 = x[:, :, :, self.split_len1:(self.split_len1 + self.split_len2)]
         if not rev:
             y1 = x1 + self.F(x2)
-            self.s = self.clamp * (tf.keras.activations.sigmoid(self.H(y1)) * 2 - 1)
+            self.s = self.clamp * (tf.keras.activations.sigmoid(self.H(y1)) * 2 - 1) + epsilon
             y2 = tf.math.multiply(x2, tf.math.exp(self.s)) + self.G(y1)
             # y2 = x2.mul(tf.math.exp(self.s)) + self.G(y1)
         else:
-            self.s = self.clamp * (tf.keras.activations.sigmoid(self.H(x1)) * 2 - 1)
+            self.s = self.clamp * (tf.keras.activations.sigmoid(self.H(x1)) * 2 - 1) + epsilon
             # self.s = print_act_stats(self.s, "s in invblock")
             y2 = tf.math.divide(x2 - self.G(x1), tf.math.exp(self.s))
             # y2 = (x2 - self.G(x1)).div(tf.math.exp(self.s))
@@ -694,6 +694,9 @@ class InvHSRNet(tf.keras.Model):
             b = HaarDownsampling(current_channel)
             self.operations.append(b)
             current_channel *= 4
+            if use_inv_conv:
+                b = InvConv(current_channel)
+                self.operations.append(b)
             for _ in range(self.block_num[i]):
                 b = InvBlockExp(current_channel, current_channel // 4, blk_type, num_filters)
                 self.operations.append(b)
@@ -713,6 +716,8 @@ class InvHSRNet(tf.keras.Model):
             scnt = 0
             for cnt in range(self.upscale_log):
                 bcnt = self.block_num[cnt] + 1
+                if self.use_inv_conv:
+                    bcnt += 1
                 for i in range(bcnt):
                     # xx = self.operations.get_layer(index=(scnt + i))(xx, rev)
                     xx = self.operations[scnt + i](xx, rev)
@@ -724,8 +729,12 @@ class InvHSRNet(tf.keras.Model):
         else:
             if not multi_reconstruction:
                 scnt = len(self.operations) - (self.block_num[-1] + 1)
+                if self.use_inv_conv:
+                    scnt -= 1
                 for cnt in reversed(range(self.upscale_log)):
                     bcnt = self.block_num[cnt] + 1
+                    if self.use_inv_conv:
+                        bcnt += 1
                     if xx.get_shape()[-1] != 1:
                         xx = tf.concat([xx, x[cnt]], -1)
                     if self.use_inv_conv and cnt == self.upscale_log - 1:
@@ -1067,10 +1076,10 @@ def train(args):
 
     # Minimize loss and auxiliary loss, and execute update op.
     step=tf.train.create_global_step()
-    main_optimizer=tf.train.AdamOptimizer(learning_rate=5e-4)
+    main_optimizer=tf.train.AdamOptimizer(learning_rate=args.main_lr)
     main_step=main_optimizer.minimize(train_loss, global_step=step)
 
-    aux_optimizer=tf.train.AdamOptimizer(learning_rate=1e-3)
+    aux_optimizer=tf.train.AdamOptimizer(learning_rate=args.aux_lr)
     aux_step=aux_optimizer.minimize(entropy_bottleneck.losses[0])
 
     train_op=tf.group(main_step, aux_step, entropy_bottleneck.updates[0])
@@ -1468,21 +1477,21 @@ def parse_args(argv):
     inv_train_cmd.add_argument(
             "--adjust_saturation", action="store_true",
             help="adjust saturation of images.")
-    inv_train_cmd.add_argument(
-            "--flow_permutation", type=int, default=1,
-            help="0->reverse, 1->shuffle, 2->invconv, 3->haar")
-    inv_train_cmd.add_argument(
-            "--flow_coupling", type=int, default=1,
-            help="0->additive, 1->mutiply")
-    inv_train_cmd.add_argument(
-            "--width", type=int, default=512,
-            help="the width of expansion")
-    inv_train_cmd.add_argument(
-            "--depth", type=int, default=12,
-            help="the width of expansion")
-    inv_train_cmd.add_argument(
-            "--n_level", type=int, default=4,
-            help="the width of expansion")
+    # inv_train_cmd.add_argument(
+    #         "--flow_permutation", type=int, default=1,
+    #         help="0->reverse, 1->shuffle, 2->invconv, 3->haar")
+    # inv_train_cmd.add_argument(
+    #         "--flow_coupling", type=int, default=1,
+    #         help="0->additive, 1->mutiply")
+    # inv_train_cmd.add_argument(
+    #         "--width", type=int, default=512,
+    #         help="the width of expansion")
+    # inv_train_cmd.add_argument(
+    #         "--depth", type=int, default=12,
+    #         help="the width of expansion")
+    # inv_train_cmd.add_argument(
+    #         "--n_level", type=int, default=4,
+    #         help="the width of expansion")
     inv_train_cmd.add_argument(
             "--blk_num", type=int, default=4,
             help="num of blocks for flow net")
@@ -1503,6 +1512,12 @@ def parse_args(argv):
     inv_train_cmd.add_argument(
             "--inv_conv", action="store_true",
             help="use 1x1 invertible conv before last split.")
+    inv_train_cmd.add_argument(
+            "--main_lr", type=float, default=1e-4,
+            help="main learning rate.")
+    inv_train_cmd.add_argument(
+            "--aux_lr", type=float, default=1e-3,
+            help="aux learning rate.")
     
 
     # 'compress' subcommand.
