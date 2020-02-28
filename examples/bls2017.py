@@ -652,7 +652,9 @@ class InvConv(tf.keras.layers.Layer):
         # sample a random orthogonal matrix
         w_init = np.linalg.qr(np.random.randn(
                 *self.w_shape))[0].astype('float32')
-        self.w = tf.get_variable("W", dtype=tf.float32, initializer=w_init)
+        w_init = tf.constant_initializer(w_init)
+        self.w = self.add_weight(name="W", shape=[channel_in] * 2, 
+                initializer=w_init, trainable=True)
 
     def call(self, x, rev=False):
         if not rev:
@@ -693,7 +695,7 @@ class InvHSRNet(tf.keras.Model):
             self.operations.append(b)
             current_channel *= 4
             for _ in range(self.block_num[i]):
-                b = InvBlockExp(current_channel, channel_out[i], blk_type, num_filters)
+                b = InvBlockExp(current_channel, current_channel // 4, blk_type, num_filters)
                 self.operations.append(b)
             current_channel = self.channel_out[i]
 
