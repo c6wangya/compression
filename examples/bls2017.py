@@ -251,7 +251,7 @@ def train(args):
             inv_transform = m.InvCompressionNet(channel_in=3, channel_out=args.channel_out, 
                     blk_type=args.blk_type, num_filters=args.num_filters,
                     kernel_size=args.kernel_size, residual=args.residual, 
-                    nin=args.nin, gdn=args.gdn)
+                    nin=args.nin, gdn=args.gdn, n_ops=args.n_ops)
             # inv_transform = m.InvHSRNet(channel_in=3, channel_out=3, 
             #         upscale_log=2, block_num=[1, 1])
             if args.guidance_type == "grayscale":
@@ -834,6 +834,27 @@ def parse_args(argv):
     train_cmd.add_argument(
             "--adjust_saturation", action="store_true",
             help="adjust saturation of images.")
+    train_cmd.add_argument(
+            "--clamp", action="store_true",
+            help="Do clamp on y.")
+    train_cmd.add_argument(
+            "--grad_clipping", type=float, default=100,
+            help="Clipping gradient.")
+    train_cmd.add_argument(
+            "--quant_grad", action="store_true",
+            help="quantize with gradient.")
+    train_cmd.add_argument(
+            "--guidance_type", default="none",
+            help="guidance type.")
+    train_cmd.add_argument(
+            "--y_guidance_weight", type=float, default=0.,
+            help="flow loss weight.")
+    train_cmd.add_argument(
+            "--main_lr", type=float, default=1e-4,
+            help="main learning rate.")
+    train_cmd.add_argument(
+            "--aux_lr", type=float, default=1e-3,
+            help="aux learning rate.")
     
     # 'inv_train' subcommand
     inv_train_cmd=subparsers.add_parser(
@@ -928,7 +949,9 @@ def parse_args(argv):
     inv_train_cmd.add_argument(
             "--quant_grad", action="store_true",
             help="quantize with gradient.")
-    
+    inv_train_cmd.add_argument(
+            "--n_ops", type=int, default=3,
+            help="number of operations in subnet")
 
     # 'compress' subcommand.
     compress_cmd=subparsers.add_parser(
