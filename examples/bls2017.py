@@ -254,8 +254,8 @@ def train(args):
                     nin=args.nin, gdn=args.gdn, n_ops=args.n_ops)
             # inv_transform = m.InvHSRNet(channel_in=3, channel_out=3, 
             #         upscale_log=2, block_num=[1, 1])
-            if args.guidance_type == "grayscale":
-                guidance_transform = m.GrayScaleGuidance(rgb_type='RGB', down_scale=4)
+        if args.guidance_type == "grayscale":
+            guidance_transform = m.GrayScaleGuidance(rgb_type='RGB', down_scale=4)
     
         """ 1 gpu """
         # Build autoencoder.
@@ -335,8 +335,6 @@ def train(args):
             y = tf.slice(out[-1], [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
             if args.clamp:
                 y = tf.clip_by_value(y, 0, 1)
-            if args.guidance_type == "grayscale":
-                y_guidance = guidance_transform(x)
             y_tilde, likelihoods = entropy_bottleneck(y, training=True)
             # train_flow = print_act_stats(train_flow, "train flow loss")
             # y_tilde = print_act_stats(y_tilde, "y_tilde")
@@ -349,7 +347,9 @@ def train(args):
             x_tilde = inv_transform(input_rev, rev=True)[-1]
             # x_tilde = print_act_stats(x_tilde, "x_tilde")
             flow_loss_weight = args.flow_loss_weight
-
+        
+        if args.guidance_type == "grayscale":
+            y_guidance = guidance_transform(x)
         # Total number of bits divided by number of pixels.
         train_bpp=tf.reduce_sum(tf.log(likelihoods)) / (-np.log(2) * num_pixels)
 
@@ -380,6 +380,8 @@ def train(args):
         filtered_vars = [var for var in tvars \
                 if not 'haar_downsampling' in var.name \
                 and not 'gray_scale_guidance' in var.name]
+        for v in filtered_vars:
+            print(v.name + '\n')
         if args.debug_mode:
             assert len([var for var in tvars if 'haar_downsampling' in var.name]) != 0, \
                 "there's no variable called haar_downsampling! \n"
