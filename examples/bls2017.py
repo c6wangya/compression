@@ -493,7 +493,7 @@ def compress(args):
             inv_transform = m.InvCompressionNet(channel_in=3, channel_out=args.channel_out, 
                     blk_type=args.blk_type, num_filters=args.num_filters,
                     kernel_size=args.kernel_size, residual=args.residual, 
-                    nin=args.nin, gdn=args.gdn)
+                    nin=args.nin, gdn=args.gdn, n_ops=args.n_ops)
 
         # Transform and compress the image.
         if not args.invnet:

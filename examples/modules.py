@@ -306,7 +306,7 @@ class InvConv(keras.layers.Layer):
 
 
 class InvCompressionNet(keras.Model):
-    def __init__(self, channel_in, channel_out, blk_type, num_filters, kernel_size, residual, nin, gdn):
+    def __init__(self, channel_in, channel_out, blk_type, num_filters, kernel_size, residual, nin, gdn, n_ops):
         super(InvCompressionNet, self).__init__()
         # self.upscale_log = upscale_log
         self.operations = []
@@ -335,21 +335,21 @@ class InvCompressionNet(keras.Model):
         self.operations.append(InvConv(current_channel))
         self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
                         blk_type, num_filters=compute_n_filters(current_channel), 
-                        kernel_size=kernel_size, residual=residual, nin=nin, gdn=gdn))
+                        kernel_size=kernel_size, residual=residual, nin=nin, gdn=gdn, n_ops=n_ops))
 
         self.operations.append(HaarDownsampling(current_channel))
         current_channel *= 4
         self.operations.append(InvConv(current_channel))
         self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
                         blk_type, num_filters=compute_n_filters(current_channel), 
-                        kernel_size=kernel_size, residual=residual, nin=nin, gdn=gdn))
+                        kernel_size=kernel_size, residual=residual, nin=nin, gdn=gdn, n_ops=n_ops))
 
         self.operations.append(HaarDownsampling(current_channel))
         current_channel *= 4
         self.operations.append(InvConv(current_channel))
         self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
                         blk_type, num_filters=compute_n_filters(current_channel), 
-                        kernel_size=kernel_size, residual=residual, nin=nin, gdn=gdn))
+                        kernel_size=kernel_size, residual=residual, nin=nin, gdn=gdn, n_ops=n_ops))
         
     def call(self, x, rev=False):
         out = []
