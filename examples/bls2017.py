@@ -380,8 +380,8 @@ def train(args):
         filtered_vars = [var for var in tvars \
                 if not 'haar_downsampling' in var.name \
                 and not 'gray_scale_guidance' in var.name]
-        for v in filtered_vars:
-            print(v.name + '\n')
+        # for v in filtered_vars:
+        #     print(v.name + '\n')
         if args.debug_mode:
             assert len([var for var in tvars if 'haar_downsampling' in var.name]) != 0, \
                 "there's no variable called haar_downsampling! \n"
