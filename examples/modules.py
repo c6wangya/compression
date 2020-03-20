@@ -188,7 +188,7 @@ class InvBlockExp(keras.layers.Layer):
         x2 = x[:, :, :, self.split_len1:(self.split_len1 + self.split_len2)]
         if not rev:
             if self.n_ops == 4:
-                self.s1 = self.clamp * (keras.activations.sigmoid(self.I(y2)) * 2 - 1) + epsilon
+                self.s1 = self.clamp * (keras.activations.sigmoid(self.I(x2)) * 2 - 1) + epsilon
                 y1 = tf.math.multiply(x1, tf.math.exp(self.s1)) + self.F(x2)
             else:
                 y1 = x1 + self.F(x2)
@@ -199,7 +199,7 @@ class InvBlockExp(keras.layers.Layer):
             y2 = tf.math.divide(x2 - self.G(x1), tf.math.exp(self.s2))
             if self.n_ops == 4:
                 self.s1 = self.clamp * (keras.activations.sigmoid(self.I(y2)) * 2 - 1) + epsilon
-                y1 = tf.math.divide(x1 - self.F(x2), tf.math.exp(self.s1))
+                y1 = tf.math.divide(x1 - self.F(y2), tf.math.exp(self.s1))
             else:
                 y1 = x1 - self.F(y2)
 
