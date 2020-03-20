@@ -179,6 +179,8 @@ class InvBlockExp(keras.layers.Layer):
             self.F = SeqBlock(num_filters, self.split_len1, kernel_size, residual=residual, nin=nin, gdn=gdn)
             self.G = SeqBlock(num_filters, self.split_len2, kernel_size, residual=residual, nin=nin, gdn=gdn)
             self.H = SeqBlock(num_filters, self.split_len2, kernel_size, residual=residual, nin=nin, gdn=gdn)
+            if n_ops == 4:
+                self.I = SeqBlock(num_filters, self.split_len1, kernel_size, residual=residual, nin=nin, gdn=gdn)
 
     def call(self, x, rev=False):
         # x1, x2 = (x.narrow(1, 0, self.split_len1), x.narrow(1, self.split_len1, self.split_len2))
