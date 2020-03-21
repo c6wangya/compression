@@ -68,7 +68,7 @@ def print_act_stats(x, _str=""):
 def read_png(filename):
     """Loads a PNG image file."""
     string = tf.read_file(filename)
-    print(" file name: {}".format(filename))
+    # print(" file name: {}".format(filename))
     image = tf.image.decode_image(string, channels=3)
     image = tf.cast(image, tf.float32)
     image /= 255
@@ -262,11 +262,11 @@ def train(args):
         train_flow = 0
         if args.command == "train":
             y=analysis_transform(x)
+            if args.clamp:
+                y = tf.clip_by_value(y, 0, 1)
             y_tilde, likelihoods=entropy_bottleneck(y, training=True)
             x_tilde=synthesis_transform(y_tilde)
             flow_loss_weight = 0
-            if args.clamp:
-                y = tf.clip_by_value(y, 0, 1)
         else:
             # Test invertibility 
             # x0 = tf.expand_dims(x[..., 0], -1)
