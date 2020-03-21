@@ -500,6 +500,8 @@ def compress(args):
         # Transform and compress the image.
         if not args.invnet:
             y=analysis_transform(x)
+            if args.clamp:
+                y = tf.clip_by_value(y, 0, 1)
             # Transform the quantized image back (if requested).
             y_hat, likelihoods=entropy_bottleneck(y, training=False)
             x_hat=synthesis_transform(y_hat if not args.reuse_y else y)
