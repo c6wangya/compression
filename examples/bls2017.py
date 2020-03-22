@@ -262,6 +262,8 @@ def train(args):
         train_flow = 0
         if args.command == "train":
             y=analysis_transform(x)
+            if args.guidance_type == "norm": 
+                train_y_guidance = tf.reduce_sum(tf.norm(y - 0.5, ord=2, axis=-1, name="guidance_norm"))
             if args.clamp:
                 y = tf.clip_by_value(y, 0, 1)
             y_tilde, likelihoods=entropy_bottleneck(y, training=True)
@@ -333,6 +335,8 @@ def train(args):
             train_flow += tf.reduce_sum(tf.norm(z + epsilon, ord=2, axis=-1, name="last_norm"))
             
             y = tf.slice(out[-1], [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
+            if args.guidance_type == "norm": 
+                train_y_guidance = tf.reduce_sum(tf.norm(y - 0.5, ord=2, axis=-1, name="guidance_norm"))
             if args.clamp:
                 y = tf.clip_by_value(y, 0, 1)
             y_tilde, likelihoods = entropy_bottleneck(y, training=True)
@@ -362,7 +366,8 @@ def train(args):
         if args.guidance_type == "grayscale":
             train_y_guidance = tf.reduce_sum(tf.squared_difference(y, y_guidance))
         elif args.guidance_type == "norm":
-            train_y_guidance = tf.reduce_sum(tf.norm(y - 0.5, ord=2, axis=-1, name="guidance_norm"))
+            # train_y_guidance = tf.reduce_sum(tf.norm(y - 0.5, ord=2, axis=-1, name="guidance_norm"))
+            pass
         elif args.guidance_type == "likelihood":
             train_y_guidance = entropy_bottleneck.losses[0]
         else:
@@ -483,7 +488,7 @@ def compress(args):
         x = tf.random_crop(x, (1, 256, 256, 3))
 
         # Instantiate model.
-        entropy_bottleneck=tfc.EntropyBottleneck()
+        entropy_bottleneck=tfc.EntropyBottleneck(noise=(not args.quant_grad))
         if not args.invnet:
             analysis_transform=m.AnalysisTransform(args.num_filters)
             synthesis_transform=m.SynthesisTransform(args.num_filters)
@@ -985,6 +990,12 @@ def parse_args(argv):
         cmd.add_argument(
                 "--gpu_device", type=int, default=3,
                 help="gpu device to be used.")
+        cmd.add_argument(
+            "--n_ops", type=int, default=3,
+            help="number of operations in subnet")
+        cmd.add_argument(
+            "--quant_grad", action="store_true",
+            help="quantize with gradient.")
     
     compress_cmd.add_argument(
             "--channel_out", nargs='+', type=int, default=[3, 3])
