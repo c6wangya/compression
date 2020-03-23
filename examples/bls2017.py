@@ -251,7 +251,8 @@ def train(args):
             inv_transform = m.InvCompressionNet(channel_in=3, channel_out=args.channel_out, 
                     blk_type=args.blk_type, num_filters=args.num_filters,
                     kernel_size=args.kernel_size, residual=args.residual, 
-                    nin=args.nin, gdn=args.gdn, n_ops=args.n_ops)
+                    nin=args.nin, gdn=args.gdn, n_ops=args.n_ops, 
+                    downsample_type=args.downsample_type)
             # inv_transform = m.InvHSRNet(channel_in=3, channel_out=3, 
             #         upscale_log=2, block_num=[1, 1])
         if args.guidance_type == "grayscale":
@@ -500,7 +501,8 @@ def compress(args):
             inv_transform = m.InvCompressionNet(channel_in=3, channel_out=args.channel_out, 
                     blk_type=args.blk_type, num_filters=args.num_filters,
                     kernel_size=args.kernel_size, residual=args.residual, 
-                    nin=args.nin, gdn=args.gdn, n_ops=args.n_ops)
+                    nin=args.nin, gdn=args.gdn, n_ops=args.n_ops, 
+                    downsample_type=args.downsample_type)
 
         # Transform and compress the image.
         if not args.invnet:
@@ -961,6 +963,9 @@ def parse_args(argv):
     inv_train_cmd.add_argument(
             "--n_ops", type=int, default=3,
             help="number of operations in subnet")
+    inv_train_cmd.add_argument(
+            "--downsample_type", default="haar",
+            help="type of downsample ('haar' or 'squeeze').")
 
     # 'compress' subcommand.
     compress_cmd=subparsers.add_parser(
@@ -996,6 +1001,9 @@ def parse_args(argv):
         cmd.add_argument(
             "--quant_grad", action="store_true",
             help="quantize with gradient.")
+        cmd.add_argument(
+            "--downsample_type", default="haar",
+            help="type of downsample ('haar' or 'squeeze').")
     
     compress_cmd.add_argument(
             "--channel_out", nargs='+', type=int, default=[3, 3])

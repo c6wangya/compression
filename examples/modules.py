@@ -308,8 +308,9 @@ class InvConv(keras.layers.Layer):
 
 
 class InvCompressionNet(keras.Model):
-    def __init__(self, channel_in, channel_out, blk_type, num_filters, kernel_size, residual, nin, gdn, n_ops):
+    def __init__(self, channel_in, channel_out, blk_type, num_filters, kernel_size, residual, nin, gdn, n_ops, downsample_type):
         super(InvCompressionNet, self).__init__()
+        assert downsample_type == "haar" or downsample_type == "squeeze"
         # self.upscale_log = upscale_log
         self.operations = []
         self.channel_in = channel_in
@@ -330,23 +331,31 @@ class InvCompressionNet(keras.Model):
             return n_filters
 
         current_channel = self.channel_in
-        self.operations.append(HaarDownsampling(current_channel))
-        current_channel *= 4
-        self.operations.append(HaarDownsampling(current_channel))
+        for _ in range(2):
+            if downsample_type == "haar":
+                self.operations.append(HaarDownsampling(current_channel))
+            else:
+                self.operations.append(SqueezeDownsampling())
+            current_channel *= 4
+        self.operations.append(InvConv(current_channel))
+        self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
+                        blk_type, num_filters=compute_n_filters(current_channel), 
+                        kernel_size=kernel_size, residual=residual, nin=nin, gdn=gdn, n_ops=n_ops))
+
+        if downsample_type == "haar":
+            self.operations.append(HaarDownsampling(current_channel))
+        else:
+            self.operations.append(SqueezeDownsampling())
         current_channel *= 4
         self.operations.append(InvConv(current_channel))
         self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
                         blk_type, num_filters=compute_n_filters(current_channel), 
                         kernel_size=kernel_size, residual=residual, nin=nin, gdn=gdn, n_ops=n_ops))
 
-        self.operations.append(HaarDownsampling(current_channel))
-        current_channel *= 4
-        self.operations.append(InvConv(current_channel))
-        self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
-                        blk_type, num_filters=compute_n_filters(current_channel), 
-                        kernel_size=kernel_size, residual=residual, nin=nin, gdn=gdn, n_ops=n_ops))
-
-        self.operations.append(HaarDownsampling(current_channel))
+        if downsample_type == "haar":
+            self.operations.append(HaarDownsampling(current_channel))
+        else:
+            self.operations.append(SqueezeDownsampling())
         current_channel *= 4
         self.operations.append(InvConv(current_channel))
         self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
@@ -547,4 +556,38 @@ class GrayScaleGuidance(keras.layers.Layer):
         out = self.conv_gray(x)
         for i in range(self.down_scale):
             out = self.downsample_ops[i](out)
+        return out
+
+
+class SqueezeDownsampling(keras.layers.Layer):
+    """
+    Squeeze layer for downsampling
+    """
+    def __init__(self, factor=2):
+        super(SqueezeDownsampling, self).__init__()
+        assert factor >= 1
+        self.factor = factor
+    
+    def call(self, x, rev=False):
+        if self.factor == 1:
+            return x
+        shape = x.get_shape()
+        height = int(shape[1])
+        width = int(shape[2])
+        n_channels = int(shape[3])
+
+        if not rev:
+            assert height % self.factor == 0 and width % self.factor == 0
+            x = tf.reshape(x, [-1, height//self.factor, self.factor,
+                            width//self.factor, self.factor, n_channels])
+            x = tf.transpose(x, [0, 1, 3, 5, 2, 4])
+            out = tf.reshape(x, [-1, height//self.factor, width //
+                            self.factor, n_channels*self.factor*self.factor])
+        else:
+            assert n_channels >= 4 and n_channels % 4 == 0
+            x = tf.reshape(
+                x, (-1, height, width, int(n_channels/self.factor**2), self.factor, self.factor))
+            x = tf.transpose(x, [0, 1, 4, 2, 5, 3])
+            out = tf.reshape(x, (-1, int(height*self.factor),
+                            int(width*self.factor), int(n_channels/self.factor**2)))
         return out
