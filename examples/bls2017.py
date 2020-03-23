@@ -389,10 +389,11 @@ def train(args):
         # for v in filtered_vars:
         #     print(v.name + '\n')
         if args.debug_mode:
-            assert len([var for var in tvars if 'haar_downsampling' in var.name]) != 0, \
+            assert not (len([var for var in tvars if 'haar_downsampling' in var.name]) == 0 \
+                and args.downsample_type == "haar"), \
                 "there's no variable called haar_downsampling! \n"
-            assert len([var for var in tvars if 'gray_scale_guidance' in var.name]) != 0 \
-                or args.y_guidance_weight == 0, \
+            assert not (len([var for var in tvars if 'gray_scale_guidance' in var.name]) == 0 \
+                and args.y_guidance_weight != 0), \
                 "there's no variable called gray_scale_guidance! \n"
             print("Has variables {} in total, and filtered out {} variables\n".format( \
                     len(tvars), len(tvars) - len(filtered_vars)))
