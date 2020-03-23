@@ -252,7 +252,7 @@ def train(args):
                     blk_type=args.blk_type, num_filters=args.num_filters,
                     kernel_size=args.kernel_size, residual=args.residual, 
                     nin=args.nin, gdn=args.gdn, n_ops=args.n_ops, 
-                    downsample_type=args.downsample_type)
+                    downsample_type=args.downsample_type, inv_conv=(not args.non1x1))
             # inv_transform = m.InvHSRNet(channel_in=3, channel_out=3, 
             #         upscale_log=2, block_num=[1, 1])
         if args.guidance_type == "grayscale":
@@ -503,7 +503,7 @@ def compress(args):
                     blk_type=args.blk_type, num_filters=args.num_filters,
                     kernel_size=args.kernel_size, residual=args.residual, 
                     nin=args.nin, gdn=args.gdn, n_ops=args.n_ops, 
-                    downsample_type=args.downsample_type)
+                    downsample_type=args.downsample_type, inv_conv=(not args.non1x1))
 
         # Transform and compress the image.
         if not args.invnet:
@@ -932,8 +932,8 @@ def parse_args(argv):
             "--blk_type", default="dense",
             help="select which type of block to use")
     inv_train_cmd.add_argument(
-            "--inv_conv", action="store_true",
-            help="use 1x1 invertible conv before last split.")
+            "--non1x1", action="store_true",
+            help="train without 1x1 invertible conv.")
     inv_train_cmd.add_argument(
             "--main_lr", type=float, default=1e-4,
             help="main learning rate.")
@@ -1021,8 +1021,8 @@ def parse_args(argv):
             "--invnet", action="store_true",
             help="use inv transform.")
     compress_cmd.add_argument(
-            "--inv_conv", action="store_true",
-            help="use 1x1 invertible conv before last split.")
+            "--non1x1", action="store_true",
+            help="train without 1x1 invertible conv.")
     compress_cmd.add_argument(
             "--residual", action="store_true",
             help="use residual block in subnet.")
