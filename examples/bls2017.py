@@ -48,6 +48,8 @@ import modules as m
 
 from tensorflow.python import debug as tf_debug
 
+import datetime
+
 epsilon = 1e-10
 
 BATCH_SIZE = 8
@@ -166,6 +168,25 @@ def get_normal_random_number(loc, scale, lower=None, upper=None):
         number = lower if number < lower else number
     return number
 
+def get_session(sess):
+    """ helper function for taking sess out from MonitoredTrainingSession """
+    session = sess
+    while type(session).__name__ != 'Session':
+        session = session._sess
+    return session
+
+def restore_weights(saver, sess, ckpt_dir):
+    """ helper function restoring weights for saver """
+    assert os.path.exists(ckpt_dir), "the path {} isn't valid".format(ckpt_dir)
+    latest = tf.train.latest_checkpoint(checkpoint_dir=ckpt_dir)
+    saver.restore(sess, save_path=latest)
+
+def save_weights(saver, sess, ckpt_dir, iters):
+    """ helper function saving weights for saver """
+    if not os.path.exists(ckpt_dir):
+        os.mkdir(path=ckpt_dir)
+    saver.save(sess, save_path=ckpt_dir + '/model_{}.ckpt'.format(iters))
+
 # 
 # class DataPreprocessor(object):
 #     def __call__(self, img):
@@ -235,7 +256,7 @@ def train(args):
         # Instantiate model.
         entropy_bottleneck=tfc.EntropyBottleneck(noise=(not args.quant_grad))
         if args.command == "train":
-            print("training")
+            print("training!")
             analysis_transform=m.AnalysisTransform(args.num_filters)
             synthesis_transform=m.SynthesisTransform(args.num_filters)
         else:
@@ -253,16 +274,18 @@ def train(args):
                     kernel_size=args.kernel_size, residual=args.residual, 
                     nin=args.nin, gdn=args.gdn, n_ops=args.n_ops, 
                     downsample_type=args.downsample_type, inv_conv=(not args.non1x1))
-            # inv_transform = m.InvHSRNet(channel_in=3, channel_out=3, 
-            #         upscale_log=2, block_num=[1, 1])
+            if "baseline" in args.guidance_type:
+                analysis_transform = m.AnalysisTransform(args.channel_out[0])
+                synthesis_transform = m.SynthesisTransform(args.channel_out[0])
+
         if args.guidance_type == "grayscale":
             guidance_transform = m.GrayScaleGuidance(rgb_type='RGB', down_scale=4)
     
         """ 1 gpu """
         # Build autoencoder.
         train_flow = 0
-        if args.command == "train":
-            y=analysis_transform(x)
+        if args.command == "train" or args.guidance_type == "baseline_pretrain":
+            y = analysis_transform(x)
             if args.guidance_type == "norm": 
                 train_y_guidance = tf.reduce_sum(tf.norm(y - 0.5, ord=2, axis=-1, name="guidance_norm"))
             if args.clamp:
@@ -270,56 +293,9 @@ def train(args):
             y_tilde, likelihoods=entropy_bottleneck(y, training=True)
             x_tilde=synthesis_transform(y_tilde)
             flow_loss_weight = 0
-        else:
-            # Test invertibility 
-            # x0 = tf.expand_dims(x[..., 0], -1)
-            # x0 = print_act_stats(x0, " initial x[..., 0] ")
-            # x1 = x[..., 1:]
-            # y = inv_transform_1(x0)
-            # # y_tilde, likelihoods = entropy_bottleneck(y, training=True)
-            # _x0 = inv_transform_1(y, rev=True)
-            # _x0 = print_act_stats(_x0, " inv x[..., 0] ")
-            # x = tf.concat([_x0, x1], axis=-1)
-            # x = print_act_stats(x, " initial x ")
-            # y = inv_transform_2(x)
-            # y_tilde, likelihoods = entropy_bottleneck(y, training=True)
-            # x_tilde = inv_transform_2(y, rev=True)
-            # x_tilde = print_act_stats(x_tilde, " inv x ")
-            
-            # For InvHSRNet
-            # # print("before forward x shape: {}".format(x.get_shape()))
-            # # x = print_act_stats(x, "x")
-            # out = inv_transform([x])
-            # zshapes = []
-            # for i in range(args.upscale_log):
-            #     xx = out[i]
-            #     if xx.get_shape()[-1] == args.channel_out[i]:
-            #         z = xx[:, :, :, args.channel_out[i] - 1:]
-            #     else:
-            #         z = xx[:, :, :, args.channel_out[i]:]
-            #     print(z.get_shape())
-            #     # z = print_act_stats(z, "z_{}".format(i))
-            #     zshapes.append(tf.shape(z))
-            #     # zshapes.append(z)
-            #     # mle of flow 
-            #     train_flow += tf.reduce_sum(tf.norm(z + epsilon, ord=2, axis=-1, name="last_norm_" + str(i)))
-            # y = tf.slice(out[-1], [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
-            # y_tilde, likelihoods = entropy_bottleneck(y, training=True)
-            # # train_flow = print_act_stats(train_flow, "train flow loss")
-            # # y_tilde = print_act_stats(y_tilde, "y_tilde")
-            # input_rev = []
-            # for zshape in zshapes:
-            #     input_rev.append(tf.random_normal(shape=zshape))
-            # # input_rev = zshapes
-            # input_rev.append(y_tilde)
-            # # input_rev.append(y)
-            # for i in input_rev:
-            #     print(i.get_shape())
-            # x_tilde = inv_transform(input_rev, rev=True)[-1]
-            # # x_tilde = print_act_stats(x_tilde, "x_tilde")
-            # flow_loss_weight = args.flow_loss_weight
-
-            # For InvCompressionNet
+        else:  # For InvCompressionNet
+            if args.guidance_type == "baseline":
+                y_base = analysis_transform(x)
             # x = print_act_stats(x, "x")
             out = inv_transform([x])
             zshapes = []
@@ -371,23 +347,34 @@ def train(args):
             pass
         elif args.guidance_type == "likelihood":
             train_y_guidance = entropy_bottleneck.losses[0]
+        elif args.guidance_type == "baseline":
+            train_y_guidance = tf.reduce_sum(tf.squared_difference(y, y_base))
         else:
             train_y_guidance = 0
                 
 
         # The rate-distortion cost.
         train_loss = args.lmbda * train_mse + \
-                    train_bpp + \
+                    args.beta * train_bpp + \
                     flow_loss_weight * train_flow + \
                     args.y_guidance_weight * train_y_guidance
         # train_loss = print_act_stats(train_loss, "overall train loss")
         
-        tvars = tf.trainable_variables()
+        if args.command == "train" or "baseline" in args.guidance_type:
+            tvars = tf.trainable_variables()
+        elif args.guidance_type == "baseline_pretrain":
+            tvars = analysis_transform.trainable_variables + \
+                    synthesis_transform.trainable_variables + \
+                    entropy_bottleneck.trainable_variables
+        # elif args.guidance_type == "baseline":
+        #     tvars = inv_transform.trainable_variables
+        else:  # inv train without baseline guidance
+            tvars = inv_transform.trainable_variables + \
+                entropy_bottleneck.trainable_variables
+
         filtered_vars = [var for var in tvars \
                 if not 'haar_downsampling' in var.name \
                 and not 'gray_scale_guidance' in var.name]
-        # for v in filtered_vars:
-        #     print(v.name + '\n')
         if args.debug_mode:
             assert not (len([var for var in tvars if 'haar_downsampling' in var.name]) == 0 \
                 and args.downsample_type == "haar"), \
@@ -397,9 +384,8 @@ def train(args):
                 "there's no variable called gray_scale_guidance! \n"
             print("Has variables {} in total, and filtered out {} variables\n".format( \
                     len(tvars), len(tvars) - len(filtered_vars)))
-        # print("all variables: {}".format(filtered_vars))
         # Minimize loss and auxiliary loss, and execute update op.
-        step=tf.train.create_global_step()
+        step = tf.train.create_global_step()
         # main_step=main_optimizer.minimize(train_loss, global_step=step, var_list=filtered_vars)
         main_optimizer=tf.train.AdamOptimizer(learning_rate=args.main_lr)
         main_gradients, main_variables = zip(*main_optimizer.compute_gradients(train_loss, filtered_vars))
@@ -452,26 +438,204 @@ def train(args):
         #     total_parameters += variable_parameters
         # print("\n[network capacity] total num of parameters -> {}\n\n".format(total_parameters))
 
-        hooks=[
-                tf.train.StopAtStepHook(last_step=args.last_step),
-                tf.train.NanTensorHook(train_loss),
-                ]
-        # config = tf.ConfigProto(allow_soft_placement=True)
-        # config.gpu_options.allow_growth = True
-        # with tf_debug.LocalCLIDebugWrapperSession(
-        with tf.train.MonitoredTrainingSession(
-                    hooks=hooks, checkpoint_dir=args.checkpoint_dir,
-                    save_checkpoint_secs=1000, save_summaries_secs=300) as sess:
-            while not sess.should_stop():
-                # if (step % 1000 == 0):
-                #     sess.run(inference_op)
-                #     tf.summary.scalar("inf_bpp", eval_bpp)
-                #     tf.summary.scalar("inf_mse", mse)
-                #     tf.summary.scalar("inf_psnr", psnr)
-                #     tf.summary.scalar("inf_msssim", msssim)
-                #     tf.summary.scalar("inf_num_pxl", num_pixels)
-                # else:
-                sess.run(train_op)
+        if not args.train_manually:
+            hooks=[
+                    tf.train.StopAtStepHook(last_step=args.last_step),
+                    tf.train.NanTensorHook(train_loss),
+                    ]
+            
+            # init saver for all the models
+            analysis_saver = tf.train.Saver(analysis_transform.trainable_variables, max_to_keep=1)
+            entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables, max_to_keep=1)
+            if args.guidance_type == "baseline_pretrain":
+                synthesis_saver = tf.train.Saver(synthesis_transform.trainable_variables, max_to_keep=1)
+            elif args.guidance_type == "baseline":
+                inv_saver = tf.train.Saver(inv_transform.trainable_variables, max_to_keep=1)
+            global_iters = 0
+
+            with tf.train.MonitoredTrainingSession(
+                        hooks=hooks, checkpoint_dir=args.checkpoint_dir,
+                        save_checkpoint_secs=1000, save_summaries_secs=300) as sess:
+                if "baseline" not in args.guidance_type:
+                    while not sess.should_stop():
+                        sess.run(train_op)
+                else:
+                    if args.finetune:
+                        if args.guidance_type == "baseline_pretrain":
+                            # load analysis, synthesis and entropybottleneck model
+                            restore_weights(synthesis_saver, get_session(sess), 
+                                    args.pretrain_checkpoint_dir + "/syn_net")
+                            restore_weights(analysis_saver, get_session(sess), 
+                                    args.pretrain_checkpoint_dir + "/ana_net")
+                            restore_weights(synthesis_saver, get_session(sess), 
+                                    args.pretrain_checkpoint_dir + "/entro_net")
+                        elif args.guidance_type == "baseline":
+                            # load invertible model
+                            restore_weights(inv_saver, get_session(sess), 
+                                    args.pretrain_checkpoint_dir + "/inv_net")
+                    if args.guidance_type == "baseline":
+                        # load analysis and entropybottleneck model
+                        restore_weights(analysis_saver, get_session(sess), 
+                                args.pretrain_checkpoint_dir + "/ana_net")
+                        restore_weights(entropy_saver, get_session(sess), 
+                                args.pretrain_checkpoint_dir + "/entro_net")
+                    while not sess.should_stop():
+                        sess.run(train_op)
+                        if global_iters % 5000 == 0:
+                            if args.guidance_type == "baseline_pretrain":
+                                # save analysis, synthesis and entropybottleneck model
+                                save_weights(synthesis_saver, get_session(sess), 
+                                        args.checkpoint_dir + '/syn_net', global_iters)
+                                save_weights(analysis_saver, get_session(sess), 
+                                        args.checkpoint_dir + '/ana_net', global_iters)
+                                save_weights(entropy_saver, get_session(sess), 
+                                        args.checkpoint_dir + '/entro_net', global_iters)
+                            elif args.guidance_type == "baseline":
+                                save_weights(inv_saver, get_session(sess), 
+                                        args.checkpoint_dir + '/inv_net', global_iters)
+                                save_weights(entropy_saver, get_session(sess), 
+                                        args.checkpoint_dir + '/entro_net', global_iters)
+                        global_iters += 1
+        else:  # training without MonitoredTrainingSession... that has been proved perform poorly
+            init_op = tf.global_variables_initializer()
+            # init saver for all the models
+            analysis_saver = tf.train.Saver(analysis_transform.trainable_variables)
+            entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables)
+            if args.guidance_type == "baseline_pretrain":
+                synthesis_saver = tf.train.Saver(synthesis_transform.trainable_variables)
+            elif args.guidance_type == "baseline":
+                inv_saver = tf.train.Saver(inv_transform.trainable_variables)
+
+            num_epoches = args.last_step * args.batchsize // args.num_data
+            num_batches = args.num_data // args.batchsize
+            with tf.Session() as sess:
+                suffix = ".ckpt"
+                sess.run(init_op)
+                if not os.path.exists(args.checkpoint_dir):
+                    os.mkdir(path=args.checkpoint_dir)
+                if args.finetune:
+                    if args.guidance_type == "baseline_pretrain":
+                        # load analysis, synthesis and entropybottleneck model
+                        synthesis_saver.restore(sess, save_path=args.checkpoint_dir + "/syn_net" + suffix)
+                        analysis_saver.restore(sess, save_path=args.checkpoint_dir + "/ana_net" + suffix)
+                        entropy_saver.restore(sess, save_path=args.checkpoint_dir + "/entro_net" + suffix)
+                    elif args.guidance_type == "baseline":
+                        # load analysis, invertible and entropybottleneck model
+                        inv_saver.restore(sess, save_path=args.checkpoint_dir + "/inv_net" + suffix)
+                # train
+                global_iter = 0
+                start_time = datetime.datetime.now()
+                with tf.device('/gpu:' + str(args.gpu_device)):
+                    for epoch_iter in range(num_epoches):
+                        for i in range(num_batches):
+                            if args.guidance_type == "baseline_pretrain":
+                                # run train op
+                                sess.run(train_op)
+                                if epoch_iter % 5 == 0:
+                                    # save analysis, synthesis and entropybottleneck model
+                                    synthesis_saver.save(sess, save_path=args.checkpoint_dir + "/syn_net" + suffix)
+                                    analysis_saver.save(sess, save_path=args.checkpoint_dir + "/ana_net" + suffix)
+                                    entropy_saver.save(sess, save_path=args.checkpoint_dir + "/entro_net" + suffix)
+                            else:  # baseline guidance
+                                # load analysis network 
+                                analysis_saver.restore(sess, save_path=args.checkpoint_dir + "/ana_net" + suffix)
+                                # run train op
+                                sess.run(train_op)
+                                if epoch_iter % 5 == 0:
+                                    inv_saver.save(sess, save_path=args.checkpoint_dir + "/inv_net" + suffix)
+                            global_iter += 1
+                            if global_iter % 3 == 0:
+                                end_time = datetime.datetime.now()
+                                interval = (end_time - start_time).seconds
+                                print("[epoch {}] training speed: {}/s, ".format(epoch_iter, round(3 / interval, 5)))
+                                start_time = datetime.datetime.now()
+
+            # # checkpint for analysis network that partially load weights 
+            # latest=tf.train.latest_checkpoint(checkpoint_dir=args.pretrain_checkpoint_dir)
+            # analysis_checkpoint = tf.train.Checkpoint(GoodModel=analysis_transform)
+            # analysis_checkpoint.restore(save_path=latest)
+
+            # with tf.Session() as sess:
+            #     if args.finetune:
+            #         # checkpoint for main network
+            #         latest = tf.train.latest_checkpoint(checkpoint_dir=args.checkpoint_dir)
+            #         tf.train.Saver(filtered_vars).restore(sess, save_path=latest)
+
+            #     for epoch_iter in range(num_epoches):
+            #         for step in range(num_batches):
+            #             sess.run(train_op)
+            #         if epoch_iter % 5 == 0:
+            #             saver = tf.train.Saver(filtered_vars)
+            #             saver.save(sess, args.checkpoint_dir + "model.ckpt")
+
+
+def evaluation(args):
+    """ all the images and save latent variables locally """
+    os.environ["CUDA_VISIBLE_DEVICES"]="{}".format(args.gpu_device)
+    
+    if args.verbose:
+        tf.logging.set_verbosity(tf.logging.INFO)
+
+    tf.enable_eager_execution()
+    
+    with tf.device("/cpu:0"):
+        eval_files=glob.glob(args.eval_glob)
+        if not eval_files:
+            raise RuntimeError(
+                    "No evaluation images found with glob '{}'.".format(args.eval_glob))
+        
+        eval_dataset=tf.data.Dataset.from_tensor_slices(eval_files)
+        eval_dataset=eval_dataset.shuffle(
+                buffer_size=len(eval_files)).repeat()
+        eval_dataset=eval_dataset.map(
+                read_png, num_parallel_calls=args.preprocess_threads)
+        # eval_dataset = eval_dataset.map(DataPreprocessor())
+        # eval_dataset = eval_dataset.map(
+        #         lambda x: tf.image.random_saturation(x, lower=0.7, upper=1))
+        # scale = get_normal_random_number(args.scale, 0.1, args.scale - 0.15, args.scale + 0.05)
+        scale = 1
+        eval_dataset=eval_dataset.map(
+                lambda x: tf.random_crop(x, (int(args.patchsize / scale), int(args.patchsize / scale), 3)))
+        # eval_dataset = eval_dataset.map(
+        #         lambda x: tf.image.resize_images(x, (args.patchsize, args.patchsize), method=tf.image.ResizeMethod.BICUBIC))
+        eval_dataset=eval_dataset.batch(args.batchsize)
+        eval_dataset=eval_dataset.prefetch(32)
+    
+    # Instantiate model.
+    entropy_bottleneck=tfc.EntropyBottleneck(noise=(not args.quant_grad))
+    if not args.invnet:
+        analysis_transform=m.AnalysisTransform(args.num_filters)
+        synthesis_transform=m.SynthesisTransform(args.num_filters)
+    else:
+        # inv_transform = m.InvHSRNet(3, channel_out=args.channel_out, 
+        #         upscale_log=args.upscale_log, block_num=[args.blk_num, args.blk_num], 
+        #         blk_type=args.blk_type, num_filters=args.num_filters, 
+        #         use_inv_conv=args.inv_conv, kernel_size=args.kernel_size, residual=args.residual)
+        inv_transform = m.InvCompressionNet(channel_in=3, channel_out=args.channel_out, 
+                blk_type=args.blk_type, num_filters=args.num_filters,
+                kernel_size=args.kernel_size, residual=args.residual, 
+                nin=args.nin, gdn=args.gdn, n_ops=args.n_ops, 
+                downsample_type=args.downsample_type, inv_conv=(not args.non1x1))
+    
+    for x in eval_dataset:
+        # compute y
+        if not args.invnet:
+            y=analysis_transform(x)
+        else:
+            out = inv_transform([x])
+            zshapes = []
+            
+            if out[-1].get_shape()[-1] == args.channel_out[-1]:
+                z = out[-1][:, :, :, args.channel_out[-1] - 1:]
+            else:
+                z = out[-1][:, :, :, args.channel_out[-1]:]
+            print(z.get_shape())
+            # z = print_act_stats(z, "z_{}".format(i))
+            if not args.reuse_z:
+                zshapes.append(tf.shape(z))
+            else:
+                zshapes.append(z)
+            y = tf.slice(out[-1], [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
 
 
 def compress(args):
@@ -504,6 +668,9 @@ def compress(args):
                     kernel_size=args.kernel_size, residual=args.residual, 
                     nin=args.nin, gdn=args.gdn, n_ops=args.n_ops, 
                     downsample_type=args.downsample_type, inv_conv=(not args.non1x1))
+            if "baseline" in args.guidance_type:
+                analysis_transform = m.AnalysisTransform(args.channel_out[0])
+                synthesis_transform = m.SynthesisTransform(args.channel_out[0])
 
         # Transform and compress the image.
         if not args.invnet:
@@ -606,11 +773,39 @@ def compress(args):
 
         # stats_graph(graph)
 
+        init_op = tf.global_variables_initializer()
         with tf.Session() as sess:
-            # Load the latest model checkpoint, get the compressed string and the tensor
-            # shapes.
-            latest=tf.train.latest_checkpoint(checkpoint_dir=args.checkpoint_dir)
-            tf.train.Saver().restore(sess, save_path=latest)
+            # Load the latest model checkpoint.
+            sess.run(init_op)
+            if args.guidance_type == "baseline":
+                # init savers
+                # analysis_saver = tf.train.Saver(analysis_transform.trainable_variables)
+                entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables)
+                inv_saver = tf.train.Saver(inv_transform.trainable_variables)
+                # restore weights
+                restore_weights(inv_saver, sess, 
+                        args.checkpoint_dir + "/inv_net")
+                # restore_weights(analysis_saver, sess, 
+                #         args.pretrain_checkpoint_dir + "/ana_net")
+                # restore_weights(entropy_saver, sess, 
+                #         args.pretrain_checkpoint_dir + "/entro_net")
+            elif args.guidance_type == "baseline_pretrain":
+                # init savers
+                entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables)
+                synthesis_saver = tf.train.Saver(synthesis_transform.trainable_variables)
+                analysis_saver = tf.train.Saver(analysis_transform.trainable_variables)
+                # restore weights
+                restore_weights(synthesis_saver, sess, 
+                        args.checkpoint_dir + "/syn_net")
+                restore_weights(analysis_saver, sess, 
+                        args.checkpoint_dir + "/ana_net")
+                restore_weights(entropy_saver, sess, 
+                        args.checkpoint_dir + "/entro_net")
+            else:
+                latest=tf.train.latest_checkpoint(checkpoint_dir=args.checkpoint_dir)
+                tf.train.Saver().restore(sess, save_path=latest)
+                
+            # get the compressed string and the tensor shapes.
             tensors=[string, tf.shape(x)[1:-1], tf.shape(y)[1:-1]]
             arrays=sess.run(tensors)
 
@@ -867,6 +1062,18 @@ def parse_args(argv):
     train_cmd.add_argument(
             "--aux_lr", type=float, default=1e-3,
             help="aux learning rate.")
+    train_cmd.add_argument(
+            "--pretrain_checkpoint_dir", default="train",
+            help="Directory where to save/load model checkpoints.")
+    train_cmd.add_argument(
+            "--num_data", type=int, default=10000,
+            help="size of dataset")
+    train_cmd.add_argument(
+            "--finetune", action="store_true",
+            help="finetune the inv network.")
+    train_cmd.add_argument(
+            "--train_manually", action="store_true",
+            help="how to train the network.")
     
     # 'inv_train' subcommand
     inv_train_cmd=subparsers.add_parser(
@@ -968,6 +1175,22 @@ def parse_args(argv):
             "--downsample_type", default="haar",
             help="type of downsample ('haar' or 'squeeze').")
 
+    inv_train_cmd.add_argument(
+            "--pretrain_checkpoint_dir", default="train",
+            help="Directory where to save/load model checkpoints.")
+    inv_train_cmd.add_argument(
+            "--num_data", type=int, default=10000,
+            help="size of dataset")
+    inv_train_cmd.add_argument(
+            "--finetune", action="store_true",
+            help="finetune the inv network.")
+    inv_train_cmd.add_argument(
+            "--train_manually", action="store_true",
+            help="how to train the network.")
+    inv_train_cmd.add_argument(
+            "--beta", type=float, default=1,
+            help="Beta for rate-distortion tradeoff.")
+
     # 'compress' subcommand.
     compress_cmd=subparsers.add_parser(
             "compress",
@@ -981,8 +1204,29 @@ def parse_args(argv):
             description="Reads a TFCI file, reconstructs the image, and writes back "
             "a PNG file.")
 
+    # 'compress' subcommand.
+    evaluation_cmd = subparsers.add_parser(
+            "evaluation",
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            description="Reads a PNG file, evaluate it.")
+    
+    evaluation_cmd.add_argument(
+            "--eval_glob", default="images/*.png",
+                help="Glob pattern identifying training data. This pattern must expand "
+                "to a list of RGB images in PNG format.")
+    evaluation_cmd.add_argument(
+            "--preprocess_threads", type=int, default=16,
+            help="Number of CPU threads to use for parallel decoding of training "
+            "images.")
+    evaluation_cmd.add_argument(
+            "--batchsize", type=int, default=8,
+            help="Batch size for training.")
+    evaluation_cmd.add_argument(
+            "--patchsize", type=int, default=256,
+            help="Size of image patches for training.")
+
     # Arguments for both 'compress' and 'decompress'.
-    for cmd, ext in ((compress_cmd, ".tfci"), (decompress_cmd, ".png")):
+    for cmd, ext in ((compress_cmd, ".tfci"), (decompress_cmd, ".png"), (evaluation_cmd, ".tfci")):
         cmd.add_argument(
                 "input_file",
                 help="Input filename.")
@@ -1005,48 +1249,55 @@ def parse_args(argv):
         cmd.add_argument(
             "--downsample_type", default="haar",
             help="type of downsample ('haar' or 'squeeze').")
-    
-    compress_cmd.add_argument(
-            "--channel_out", nargs='+', type=int, default=[3, 3])
-    compress_cmd.add_argument(
-            "--upscale_log", type=int, default=2,
-            help="upscale times")
-    compress_cmd.add_argument(
-            "--blk_num", type=int, default=4,
-            help="num of blocks for flow net")
-    compress_cmd.add_argument(
-            "--blk_type", default="dense",
-            help="select which type of block to use")
-    compress_cmd.add_argument(
-            "--invnet", action="store_true",
-            help="use inv transform.")
-    compress_cmd.add_argument(
-            "--non1x1", action="store_true",
-            help="train without 1x1 invertible conv.")
-    compress_cmd.add_argument(
-            "--residual", action="store_true",
-            help="use residual block in subnet.")
-    compress_cmd.add_argument(
-            "--kernel_size", type=int, default=3,
-            help="kernel size of subunit conv")
-    compress_cmd.add_argument(
-            "--nin", action="store_true",
-            help="use 1x1 conv in subnet.")
-    compress_cmd.add_argument(
-            "--gdn", action="store_true",
-            help="use GDN in subnet.")
-    compress_cmd.add_argument(
-            "--reuse_y", action="store_true",
-            help="skip quantization and AE&AD.")
-    compress_cmd.add_argument(
-            "--reuse_z", action="store_true",
-            help="skip sampling z.")
-    compress_cmd.add_argument(
-            "--clamp", action="store_true",
-            help="Do clamp on y.")
-    compress_cmd.add_argument(
-            "--std", type=float, default=1,
-            help="std for sampling z.")
+
+        cmd.add_argument(
+                "--channel_out", nargs='+', type=int, default=[3, 3])
+        cmd.add_argument(
+                "--upscale_log", type=int, default=2,
+                help="upscale times")
+        cmd.add_argument(
+                "--blk_num", type=int, default=4,
+                help="num of blocks for flow net")
+        cmd.add_argument(
+                "--blk_type", default="dense",
+                help="select which type of block to use")
+        cmd.add_argument(
+                "--invnet", action="store_true",
+                help="use inv transform.")
+        cmd.add_argument(
+                "--non1x1", action="store_true",
+                help="train without 1x1 invertible conv.")
+        cmd.add_argument(
+                "--residual", action="store_true",
+                help="use residual block in subnet.")
+        cmd.add_argument(
+                "--kernel_size", type=int, default=3,
+                help="kernel size of subunit conv")
+        cmd.add_argument(
+                "--nin", action="store_true",
+                help="use 1x1 conv in subnet.")
+        cmd.add_argument(
+                "--gdn", action="store_true",
+                help="use GDN in subnet.")
+        cmd.add_argument(
+                "--reuse_y", action="store_true",
+                help="skip quantization and AE&AD.")
+        cmd.add_argument(
+                "--reuse_z", action="store_true",
+                help="skip sampling z.")
+        cmd.add_argument(
+                "--clamp", action="store_true",
+                help="Do clamp on y.")
+        cmd.add_argument(
+                "--std", type=float, default=1,
+                help="std for sampling z.")
+        cmd.add_argument(
+                "--guidance_type", default="none",
+                help="guidance type.")
+        cmd.add_argument(
+                "--pretrain_checkpoint_dir", default="train",
+                help="Directory where to save/load model checkpoints.")
+        
 
         # 'compress' subcommand.
     multi_compress_cmd=subparsers.add_parser(
@@ -1099,7 +1350,8 @@ def main(args):
     elif args.command == "multi_compress":
         print("multi_compress!")
         multi_compress(args)
-
+    elif args.command == "evaluation":
+        evaluation(args)
 
 if __name__ == "__main__":
     app.run(main, flags_parser=parse_args)
