@@ -261,22 +261,16 @@ def train(args):
             synthesis_transform=m.SynthesisTransform(args.num_filters)
         else:
             # inv train net
-            print("inv training!")
-            # inv_transform_1 = m.HaarDownsampling(1)
-            # inv_transform_2 = m.HaarDownsampling(3)
-            # inv_transform_2 = m.InvBlockExp(12, 3)
-            # inv_transform = m.InvHSRNet(channel_in=3, channel_out=args.channel_out, 
-            #         upscale_log=args.upscale_log, block_num=[args.blk_num, args.blk_num], 
-            #         blk_type=args.blk_type, num_filters=args.num_filters,
-            #         use_inv_conv=args.inv_conv, kernel_size=args.kernel_size, residual=args.residual)
             inv_transform = m.InvCompressionNet(channel_in=3, channel_out=args.channel_out, 
                     blk_type=args.blk_type, num_filters=args.num_filters,
                     kernel_size=args.kernel_size, residual=args.residual, 
                     nin=args.nin, gdn=args.gdn, n_ops=args.n_ops, 
                     downsample_type=args.downsample_type, inv_conv=(not args.non1x1))
-            if "baseline" in args.guidance_type:
+            if args.guidance_type == "baseline_pretrain":
                 analysis_transform = m.AnalysisTransform(args.channel_out[0])
                 synthesis_transform = m.SynthesisTransform(args.channel_out[0])
+            elif args.guidance_type == "baseline":
+                analysis_transform = m.AnalysisTransform(args.channel_out[0])
 
         if args.guidance_type == "grayscale":
             guidance_transform = m.GrayScaleGuidance(rgb_type='RGB', down_scale=4)
@@ -366,9 +360,9 @@ def train(args):
             tvars = analysis_transform.trainable_variables + \
                     synthesis_transform.trainable_variables + \
                     entropy_bottleneck.trainable_variables
-        # elif args.guidance_type == "baseline":
-        #     tvars = inv_transform.trainable_variables
-        else:  # inv train without baseline guidance
+        elif args.freeze_aux:  # freeze auxiliary network
+            tvars = inv_transform.trainable_variables
+        else:  # not freeze aux net
             tvars = inv_transform.trainable_variables + \
                 entropy_bottleneck.trainable_variables
 
@@ -386,7 +380,6 @@ def train(args):
                     len(tvars), len(tvars) - len(filtered_vars)))
         # Minimize loss and auxiliary loss, and execute update op.
         step = tf.train.create_global_step()
-        # main_step=main_optimizer.minimize(train_loss, global_step=step, var_list=filtered_vars)
         main_optimizer=tf.train.AdamOptimizer(learning_rate=args.main_lr)
         main_gradients, main_variables = zip(*main_optimizer.compute_gradients(train_loss, filtered_vars))
         main_gradients = [
@@ -394,16 +387,18 @@ def train(args):
             for gradient in main_gradients]
         main_step = main_optimizer.apply_gradients(zip(main_gradients, main_variables), global_step=step)
         
-        # aux_step=aux_optimizer.minimize(entropy_bottleneck.losses[0], var_list=filtered_vars)
-        aux_optimizer=tf.train.AdamOptimizer(learning_rate=args.aux_lr)
-        aux_gradients, aux_variables = zip(*aux_optimizer.compute_gradients( \
-                entropy_bottleneck.losses[0], filtered_vars))
-        aux_gradients = [
-            None if gradient is None else tf.clip_by_norm(gradient, args.grad_clipping)
-            for gradient in aux_gradients]
-        aux_step = aux_optimizer.apply_gradients(zip(aux_gradients, aux_variables))
-
-        train_op=tf.group(main_step, aux_step, entropy_bottleneck.updates[0])
+        if not args.freeze_aux:
+            aux_optimizer=tf.train.AdamOptimizer(learning_rate=args.aux_lr)
+            aux_gradients, aux_variables = zip(*aux_optimizer.compute_gradients( \
+                    entropy_bottleneck.losses[0], filtered_vars))
+            aux_gradients = [
+                None if gradient is None else tf.clip_by_norm(gradient, args.grad_clipping)
+                for gradient in aux_gradients]
+            aux_step = aux_optimizer.apply_gradients(zip(aux_gradients, aux_variables))
+            # group training operations
+            train_op=tf.group(main_step, aux_step, entropy_bottleneck.updates[0])
+        else:
+            train_op=tf.group(main_step, aux_step, entropy_bottleneck.updates[0])
 
         # eval_bpp, mse, psnr, msssim, num_pixels = inference(x,
         #         analysis_transform, entropy_bottleneck, synthesis_transform)
@@ -1190,6 +1185,9 @@ def parse_args(argv):
     inv_train_cmd.add_argument(
             "--beta", type=float, default=1,
             help="Beta for rate-distortion tradeoff.")
+    inv_train_cmd.add_argument(
+            "--freeze_aux", action="store_true",
+            help="whether freeze auxiliary net when training.")
 
     # 'compress' subcommand.
     compress_cmd=subparsers.add_parser(
