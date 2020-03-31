@@ -398,7 +398,7 @@ def train(args):
             # group training operations
             train_op=tf.group(main_step, aux_step, entropy_bottleneck.updates[0])
         else:
-            train_op=tf.group(main_step, aux_step, entropy_bottleneck.updates[0])
+            train_op=tf.group(main_step, entropy_bottleneck.updates[0])
 
         # eval_bpp, mse, psnr, msssim, num_pixels = inference(x,
         #         analysis_transform, entropy_bottleneck, synthesis_transform)
