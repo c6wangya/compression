@@ -440,13 +440,14 @@ def train(args):
                     ]
             
             # init saver for all the models
-            analysis_saver = tf.train.Saver(analysis_transform.trainable_variables, max_to_keep=1)
-            entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables, max_to_keep=1)
-            if args.guidance_type == "baseline_pretrain":
-                synthesis_saver = tf.train.Saver(synthesis_transform.trainable_variables, max_to_keep=1)
-            elif args.guidance_type == "baseline":
-                inv_saver = tf.train.Saver(inv_transform.trainable_variables, max_to_keep=1)
-            global_iters = 0
+            if "baseline" in args.guidance_type:
+                analysis_saver = tf.train.Saver(analysis_transform.trainable_variables, max_to_keep=1)
+                entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables, max_to_keep=1)
+                if args.guidance_type == "baseline_pretrain":
+                    synthesis_saver = tf.train.Saver(synthesis_transform.trainable_variables, max_to_keep=1)
+                elif args.guidance_type == "baseline":
+                    inv_saver = tf.train.Saver(inv_transform.trainable_variables, max_to_keep=1)
+                global_iters = 0
 
             with tf.train.MonitoredTrainingSession(
                         hooks=hooks, checkpoint_dir=args.checkpoint_dir,
