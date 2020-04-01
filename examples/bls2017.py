@@ -187,29 +187,13 @@ def save_weights(saver, sess, ckpt_dir, iters):
         os.mkdir(path=ckpt_dir)
     saver.save(sess, save_path=ckpt_dir + '/model_{}.ckpt'.format(iters))
 
-# 
-# class DataPreprocessor(object):
-#     def __call__(self, img):
-#         img = tf.cast(img, tf.float32)
-#         # randomly adjust saturation in the range of []
-#         print(img.get_shape())
-#         img = tf.image.random_saturation(img, lower=0.7, upper=1)
-#         # randomly add uniform noise
-#         print("img shape: {}".format(tf.shape(img)))
-#         noise = tf.random_uniform((tf.shape(img), 0, 1)) - 0.5
-#         img = tf.add(img, noise)
-#         # randomly crop image
-#         scale = get_normal_random_number(0.75, 0.1, 0.6, 0.8)
-#         img = tf.random_crop(img, (args.patchsize / scale, args.patchsize / scale, 3))
-#         size = tf.concat((256, 256), axis=0)
-#         img = tf.image.resize_images(img, size, method=tf.image.ResizeMethod.BICUBIC)
-#         # # randomly downsample image
-#         # scale = get_normal_random_number(0.75, 0.1, 0.6, 0.8)
-#         # H, W, _ = img.get_shape()
-#         # size = tf.concat((H * scale, W * scale), axis=0)
-#         # size = tf.cast(size, tf.int32)
-#         # img = tf.image.resize_images(img, size, method=tf.image.ResizeMethod.BICUBIC)
-#         return img
+@tf.custum_gradient
+def differentiable_round(x):
+    """ customized differentiable round operation"""
+    def grad(dy):
+        return tf.ones_like(dy)
+    return tf.round(x), grad
+
 
 def train(args):
     """Trains the model."""
@@ -310,12 +294,20 @@ def train(args):
                 train_y_guidance = tf.reduce_sum(tf.norm(y - 0.5, ord=2, axis=-1, name="guidance_norm"))
             if args.clamp:
                 y = tf.clip_by_value(y, 0, 1)
-            y_tilde, likelihoods = entropy_bottleneck(y, training=True)
+            if args.no_aux:
+                y_tilde = differentiable_round(y)
+                # to compute bpp
+                _, likelihood = entropy_bottleneck(tf.stop_gradient(y), training=True)
+            else:
+                y_tilde, likelihoods = entropy_bottleneck(y, training=True)
             # train_flow = print_act_stats(train_flow, "train flow loss")
             # y_tilde = print_act_stats(y_tilde, "y_tilde")
             input_rev = []
             for zshape in zshapes:
-                input_rev.append(tf.random_normal(shape=zshape))
+                if args.zero_z:
+                    input_rev.append(tf.zeros(shape=zshape))
+                else:
+                    input_rev.append(tf.random_normal(shape=zshape))
             # input_rev = zshapes
             input_rev.append(y_tilde)
             # input_rev.append(y)
@@ -349,7 +341,7 @@ def train(args):
 
         # The rate-distortion cost.
         train_loss = args.lmbda * train_mse + \
-                    args.beta * train_bpp + \
+                    (0 if args.no_aux else args.beta * train_bpp) + \
                     flow_loss_weight * train_flow + \
                     args.y_guidance_weight * train_y_guidance
         # train_loss = print_act_stats(train_loss, "overall train loss")
@@ -565,75 +557,6 @@ def train(args):
             #             saver.save(sess, args.checkpoint_dir + "model.ckpt")
 
 
-def evaluation(args):
-    """ all the images and save latent variables locally """
-    os.environ["CUDA_VISIBLE_DEVICES"]="{}".format(args.gpu_device)
-    
-    if args.verbose:
-        tf.logging.set_verbosity(tf.logging.INFO)
-
-    tf.enable_eager_execution()
-    
-    with tf.device("/cpu:0"):
-        eval_files=glob.glob(args.eval_glob)
-        if not eval_files:
-            raise RuntimeError(
-                    "No evaluation images found with glob '{}'.".format(args.eval_glob))
-        
-        eval_dataset=tf.data.Dataset.from_tensor_slices(eval_files)
-        eval_dataset=eval_dataset.shuffle(
-                buffer_size=len(eval_files)).repeat()
-        eval_dataset=eval_dataset.map(
-                read_png, num_parallel_calls=args.preprocess_threads)
-        # eval_dataset = eval_dataset.map(DataPreprocessor())
-        # eval_dataset = eval_dataset.map(
-        #         lambda x: tf.image.random_saturation(x, lower=0.7, upper=1))
-        # scale = get_normal_random_number(args.scale, 0.1, args.scale - 0.15, args.scale + 0.05)
-        scale = 1
-        eval_dataset=eval_dataset.map(
-                lambda x: tf.random_crop(x, (int(args.patchsize / scale), int(args.patchsize / scale), 3)))
-        # eval_dataset = eval_dataset.map(
-        #         lambda x: tf.image.resize_images(x, (args.patchsize, args.patchsize), method=tf.image.ResizeMethod.BICUBIC))
-        eval_dataset=eval_dataset.batch(args.batchsize)
-        eval_dataset=eval_dataset.prefetch(32)
-    
-    # Instantiate model.
-    entropy_bottleneck=tfc.EntropyBottleneck(noise=(not args.quant_grad))
-    if not args.invnet:
-        analysis_transform=m.AnalysisTransform(args.num_filters)
-        synthesis_transform=m.SynthesisTransform(args.num_filters)
-    else:
-        # inv_transform = m.InvHSRNet(3, channel_out=args.channel_out, 
-        #         upscale_log=args.upscale_log, block_num=[args.blk_num, args.blk_num], 
-        #         blk_type=args.blk_type, num_filters=args.num_filters, 
-        #         use_inv_conv=args.inv_conv, kernel_size=args.kernel_size, residual=args.residual)
-        inv_transform = m.InvCompressionNet(channel_in=3, channel_out=args.channel_out, 
-                blk_type=args.blk_type, num_filters=args.num_filters,
-                kernel_size=args.kernel_size, residual=args.residual, 
-                nin=args.nin, gdn=args.gdn, n_ops=args.n_ops, 
-                downsample_type=args.downsample_type, inv_conv=(not args.non1x1))
-    
-    for x in eval_dataset:
-        # compute y
-        if not args.invnet:
-            y=analysis_transform(x)
-        else:
-            out = inv_transform([x])
-            zshapes = []
-            
-            if out[-1].get_shape()[-1] == args.channel_out[-1]:
-                z = out[-1][:, :, :, args.channel_out[-1] - 1:]
-            else:
-                z = out[-1][:, :, :, args.channel_out[-1]:]
-            print(z.get_shape())
-            # z = print_act_stats(z, "z_{}".format(i))
-            if not args.reuse_z:
-                zshapes.append(tf.shape(z))
-            else:
-                zshapes.append(z)
-            y = tf.slice(out[-1], [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
-
-
 def compress(args):
     """Compresses an image."""
     os.environ["CUDA_VISIBLE_DEVICES"]="{}".format(args.gpu_device)
@@ -721,7 +644,9 @@ def compress(args):
             y_hat, likelihoods = entropy_bottleneck(y, training=False)
             # train_flow = print_act_stats(train_flow, "train flow loss")
             # y_tilde = print_act_stats(y_tilde, "y_tilde"
-            if not args.reuse_z:
+            if not args.reuse_z and args.zero_z:
+                input_rev = [tf.zeros(shape=zshape) for zshape in zshapes]
+            elif not args.reuse_z:
                 input_rev = [tf.random_normal(shape=zshape, stddev=args.std) for zshape in zshapes]
             else:
                 input_rev = zshapes
@@ -1189,6 +1114,13 @@ def parse_args(argv):
     inv_train_cmd.add_argument(
             "--freeze_aux", action="store_true",
             help="whether freeze auxiliary net when training.")
+    inv_train_cmd.add_argument(
+            "--zero_z", action="store_true",
+            help="whether set z to zeros.")
+    inv_train_cmd.add_argument(
+            "--no_aux", action="store_true",
+            help="whether use aux net to train. \
+                (if not then manually round and pass gradient).")
 
     # 'compress' subcommand.
     compress_cmd=subparsers.add_parser(
@@ -1296,7 +1228,10 @@ def parse_args(argv):
         cmd.add_argument(
                 "--pretrain_checkpoint_dir", default="train",
                 help="Directory where to save/load model checkpoints.")
-        
+        cmd.add_argument(
+                "--zero_z", action="store_true",
+                help="whether set z to zeros.")
+            
 
         # 'compress' subcommand.
     multi_compress_cmd=subparsers.add_parser(
