@@ -187,7 +187,7 @@ def save_weights(saver, sess, ckpt_dir, iters):
         os.mkdir(path=ckpt_dir)
     saver.save(sess, save_path=ckpt_dir + '/model_{}.ckpt'.format(iters))
 
-@tf.custum_gradient
+@tf.custom_gradient
 def differentiable_round(x):
     """ customized differentiable round operation"""
     def grad(dy):
