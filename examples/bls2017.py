@@ -297,7 +297,7 @@ def train(args):
             if args.no_aux:
                 y_tilde = differentiable_round(y)
                 # to compute bpp
-                _, likelihood = entropy_bottleneck(tf.stop_gradient(y), training=True)
+                _, likelihoods = entropy_bottleneck(tf.stop_gradient(y), training=True)
             else:
                 y_tilde, likelihoods = entropy_bottleneck(y, training=True)
             # train_flow = print_act_stats(train_flow, "train flow loss")
