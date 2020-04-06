@@ -351,7 +351,7 @@ def train(args):
                     args.y_guidance_weight * train_y_guidance
         # train_loss = print_act_stats(train_loss, "overall train loss")
         
-        if args.command == "train" or "baseline" in args.guidance_type:
+        if args.command == "train" or "baseline" not in args.guidance_type:
             tvars = tf.trainable_variables()
         elif args.guidance_type == "baseline_pretrain":
             tvars = analysis_transform.trainable_variables + \
