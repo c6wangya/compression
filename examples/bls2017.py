@@ -447,7 +447,7 @@ def train(args):
             with tf.train.MonitoredTrainingSession(
                         hooks=hooks, checkpoint_dir=args.checkpoint_dir,
                         save_checkpoint_secs=1000, save_summaries_secs=300) as sess:
-                if "baseline" not in args.guidance_type:
+                if "baseline" not in args.guidance_type or args.finetune:
                     while not sess.should_stop():
                         sess.run(train_op)
                 else:
