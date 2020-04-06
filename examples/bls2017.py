@@ -294,14 +294,16 @@ def train(args):
                 train_y_guidance = tf.reduce_sum(tf.norm(y - 0.5, ord=2, axis=-1, name="guidance_norm"))
             if args.clamp:
                 y = tf.clip_by_value(y, 0, 1)
+            
             if args.no_aux and args.guidance_type == "baseline":
                 y_tilde, likelihoods = entropy_bottleneck(tf.stop_gradient(y_base), training=True)
-            if args.no_aux:
+            elif args.no_aux:
                 y_tilde = differentiable_round(y)
                 # to compute bpp
                 _, likelihoods = entropy_bottleneck(tf.stop_gradient(y), training=True)
             else:
                 y_tilde, likelihoods = entropy_bottleneck(y, training=True)
+                
             input_rev = []
             for zshape in zshapes:
                 if args.zero_z:
