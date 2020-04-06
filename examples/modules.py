@@ -207,9 +207,13 @@ class InvBlockExp(keras.layers.Layer):
 
     def jacobian(self, x, rev=False):
         if not rev:
-            jac = tf.reduce_sum(self.s)
+            jac = tf.reduce_sum(self.s2)
+            if self.n_ops == 4:
+                jac += tf.reduce_sum(self.s1)
         else:
-            jac = -tf.reduce_sum(self.s)
+            jac = -tf.reduce_sum(self.s2)
+            if self.n_ops == 4: 
+                jac -= tf.reduce_sum(self.s1)
 
         return jac / 8
 
@@ -300,11 +304,12 @@ class InvConv(keras.layers.Layer):
     def jacobian(self, x, rev=False):
         H, W = x.get_shape().as_list()[1:3]
         if not rev:
-            return tf.cast(tf.log(abs(tf.matrix_determinant(
+            jac = tf.cast(tf.log(abs(tf.matrix_determinant(
                 tf.cast(self.w, 'float64')))), 'float32') * H * W
         else:
-            return - tf.cast(tf.log(abs(tf.matrix_determinant(
+            jac = - tf.cast(tf.log(abs(tf.matrix_determinant(
                 tf.cast(self.w, 'float64')))), 'float32') * H * W
+        return tf.reduce_mean(jac)
 
 
 class InvCompressionNet(keras.Model):
@@ -368,10 +373,12 @@ class InvCompressionNet(keras.Model):
         
     def call(self, x, rev=False):
         out = []
+        jacobian = 0
         if not rev:
             xx = x[-1]
             for i in range(len(self.operations)):
                 xx = self.operations[i](xx, rev)
+                jacobian += self.operations[i].jacobian(xx, rev)
             # assert xx.get_shape()[-1] == 768 and xx.get_shape()[-2] == 16, \
                 # "x shape is {}\n".format(xx.get_shape())
         else:
@@ -379,8 +386,9 @@ class InvCompressionNet(keras.Model):
                 xx = tf.concat([x[-1], x[-2]], axis=-1)
             for i in reversed(range(len(self.operations))):
                 xx = self.operations[i](xx, rev)
+                jacobian += self.operations[i].jacobian(xx, rev)
         out.append(xx)
-        return out
+        return out, jacobian
 
     # # if rev, x contains latent z1, z2 ... zn, LR, output contains LR_n-1, ..., LR1, HR
     # # else x contains HR, output contains [LR1, z1], [LR2, z2], ... [LR, zn]
@@ -595,3 +603,6 @@ class SqueezeDownsampling(keras.layers.Layer):
             out = tf.reshape(x, (-1, int(height*self.factor),
                             int(width*self.factor), int(n_channels/self.factor**2)))
         return out
+
+    def jacobian(self, x, rev=False):
+        return 0
