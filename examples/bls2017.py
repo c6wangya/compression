@@ -303,7 +303,7 @@ def train(args):
                 _, likelihoods = entropy_bottleneck(tf.stop_gradient(y), training=True)
             else:
                 y_tilde, likelihoods = entropy_bottleneck(y, training=True)
-                
+
             input_rev = []
             for zshape in zshapes:
                 if args.zero_z:
@@ -337,7 +337,7 @@ def train(args):
         elif args.guidance_type == "likelihood":
             train_y_guidance = entropy_bottleneck.losses[0]
         elif args.guidance_type == "baseline":
-            train_y_guidance = tf.reduce_sum(tf.squared_difference(y, y_base))
+            train_y_guidance = tf.reduce_sum(tf.squared_difference(y, tf.stop_gradient(y_base)))
         else:
             train_y_guidance = 0
 
