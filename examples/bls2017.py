@@ -261,7 +261,7 @@ def train(args):
     
         """ 1 gpu """
         # Build autoencoder.
-        train_flow = 0
+        train_flow, train_jac = 0, 0
         if args.command == "train" or args.guidance_type == "baseline_pretrain":
             y = analysis_transform(x)
             if args.guidance_type == "norm": 
@@ -275,7 +275,7 @@ def train(args):
             if args.guidance_type == "baseline":
                 y_base = analysis_transform(x)
             # x = print_act_stats(x, "x")
-            out = inv_transform([x])
+            out, train_jac = inv_transform([x])
             zshapes = []
             
             if out[-1].get_shape()[-1] == args.channel_out[-1]:
@@ -294,14 +294,14 @@ def train(args):
                 train_y_guidance = tf.reduce_sum(tf.norm(y - 0.5, ord=2, axis=-1, name="guidance_norm"))
             if args.clamp:
                 y = tf.clip_by_value(y, 0, 1)
+            if args.no_aux and args.guidance_type == "baseline":
+                y_tilde, likelihoods = entropy_bottleneck(tf.stop_gradient(y_base), training=True)
             if args.no_aux:
                 y_tilde = differentiable_round(y)
                 # to compute bpp
                 _, likelihoods = entropy_bottleneck(tf.stop_gradient(y), training=True)
             else:
                 y_tilde, likelihoods = entropy_bottleneck(y, training=True)
-            # train_flow = print_act_stats(train_flow, "train flow loss")
-            # y_tilde = print_act_stats(y_tilde, "y_tilde")
             input_rev = []
             for zshape in zshapes:
                 if args.zero_z:
@@ -311,7 +311,8 @@ def train(args):
             # input_rev = zshapes
             input_rev.append(y_tilde)
             # input_rev.append(y)
-            x_tilde = inv_transform(input_rev, rev=True)[-1]
+            x_tilde, _ = inv_transform(input_rev, rev=True)
+            x_tilde = x_tilde[-1]
             # x_tilde = print_act_stats(x_tilde, "x_tilde")
             flow_loss_weight = args.flow_loss_weight
         
@@ -337,12 +338,14 @@ def train(args):
             train_y_guidance = tf.reduce_sum(tf.squared_difference(y, y_base))
         else:
             train_y_guidance = 0
-                
+
+        if not args.train_jacobian:
+            train_jac = 0
 
         # The rate-distortion cost.
         train_loss = args.lmbda * train_mse + \
-                    (0 if args.no_aux else args.beta * train_bpp) + \
-                    flow_loss_weight * train_flow + \
+                    args.beta * train_bpp + \
+                    flow_loss_weight * (train_flow + train_jac) + \
                     args.y_guidance_weight * train_y_guidance
         # train_loss = print_act_stats(train_loss, "overall train loss")
         
@@ -624,7 +627,7 @@ def compress(args):
 
             # For InvCompressionNet
             # x = print_act_stats(x, "x")
-            out = inv_transform([x])
+            out, _ = inv_transform([x])
             zshapes = []
             
             if out[-1].get_shape()[-1] == args.channel_out[-1]:
@@ -652,7 +655,8 @@ def compress(args):
                 input_rev = zshapes
             input_rev.append(y_hat if not args.reuse_y else y)
             # input_rev.append(y)
-            x_hat = inv_transform(input_rev, rev=True)[-1]
+            x_hat, _ = inv_transform(input_rev, rev=True)
+            x_hat = x_hat[-1]
         
         string=entropy_bottleneck.compress(y)
         num_pixels=tf.cast(tf.reduce_prod(tf.shape(x)[:-1]), dtype=tf.float32)
@@ -697,8 +701,8 @@ def compress(args):
         init_op = tf.global_variables_initializer()
         with tf.Session() as sess:
             # Load the latest model checkpoint.
-            sess.run(init_op)
             if args.guidance_type == "baseline":
+                sess.run(init_op)
                 # init savers
                 # analysis_saver = tf.train.Saver(analysis_transform.trainable_variables)
                 entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables)
@@ -711,6 +715,7 @@ def compress(args):
                 # restore_weights(entropy_saver, sess, 
                 #         args.pretrain_checkpoint_dir + "/entro_net")
             elif args.guidance_type == "baseline_pretrain":
+                sess.run(init_op)
                 # init savers
                 entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables)
                 synthesis_saver = tf.train.Saver(synthesis_transform.trainable_variables)
@@ -1121,6 +1126,9 @@ def parse_args(argv):
             "--no_aux", action="store_true",
             help="whether use aux net to train. \
                 (if not then manually round and pass gradient).")
+    inv_train_cmd.add_argument(
+            "--train_jacobian", action="store_true",
+            help="whether jacobian loss to train.")
 
     # 'compress' subcommand.
     compress_cmd=subparsers.add_parser(
