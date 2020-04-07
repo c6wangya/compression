@@ -595,6 +595,8 @@ def compress(args):
             if "baseline" in args.guidance_type:
                 analysis_transform = m.AnalysisTransform(args.channel_out[0])
                 synthesis_transform = m.SynthesisTransform(args.channel_out[0])
+            elif args.use_y_base:
+                analysis_transform = m.AnalysisTransform(args.channel_out[0])
 
         # Transform and compress the image.
         if not args.invnet:
@@ -606,27 +608,6 @@ def compress(args):
             x_hat=synthesis_transform(y_hat if not args.reuse_y else y)
             x_hat=x_hat[:, :x_shape[1], :x_shape[2], :]
         else:
-            # For InvHSRNet
-            # # x = print_act_stats(x, "x forward")
-            # out = inv_transform([x])
-            # zshapes = []
-            # for i in range(args.upscale_log):
-            #     xx = out[i]
-            #     if xx.get_shape()[-1] == args.channel_out[i]:
-            #         z = xx[:, :, :, args.channel_out[i] - 1:]
-            #     else:
-            #         z = xx[:, :, :, args.channel_out[i]:]
-            #     # zshapes.append(tf.shape(z))
-            #     zshapes.append(z)
-            # y = tf.slice(out[-1], [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
-
-            # y_hat, likelihoods = entropy_bottleneck(y, training=False)
-            # # input_rev = [tf.random_normal(shape=zshape) for zshape in zshapes]
-            # input_rev = zshapes
-            # input_rev.append(y_hat)
-            # x_hat = inv_transform(input_rev, rev=True)[-1]
-            # # x_hat = print_act_stats(x_hat, "x hat")
-
             # For InvCompressionNet
             # x = print_act_stats(x, "x")
             out, _ = inv_transform([x])
@@ -646,7 +627,11 @@ def compress(args):
             if args.clamp:
                 y = tf.clip_by_value(y, 0, 1)
 
-            y_hat, likelihoods = entropy_bottleneck(y, training=False)
+            if args.use_y_base:
+                y_base = analysis_transform(x)
+                y_hat, likelihoods = entropy_bottleneck(y_base, training=False)
+            else:
+                y_hat, likelihoods = entropy_bottleneck(y, training=False)
             # train_flow = print_act_stats(train_flow, "train flow loss")
             # y_tilde = print_act_stats(y_tilde, "y_tilde"
             if not args.reuse_z and args.zero_z:
@@ -732,7 +717,11 @@ def compress(args):
             else:
                 latest=tf.train.latest_checkpoint(checkpoint_dir=args.checkpoint_dir)
                 tf.train.Saver().restore(sess, save_path=latest)
-                
+                if args.use_y_base:
+                    analysis_saver = tf.train.Saver(analysis_transform.trainable_variables)
+                    restore_weights(analysis_saver, sess, 
+                        args.pretrain_checkpoint_dir + "/ana_net")
+
             # get the compressed string and the tensor shapes.
             tensors=[string, tf.shape(x)[1:-1], tf.shape(y)[1:-1]]
             arrays=sess.run(tensors)
@@ -1241,6 +1230,9 @@ def parse_args(argv):
         cmd.add_argument(
                 "--zero_z", action="store_true",
                 help="whether set z to zeros.")
+        cmd.add_argument(
+                "--use_y_base", action="store_true",
+                help="whether use y_base in reverse process.")
             
 
         # 'compress' subcommand.
