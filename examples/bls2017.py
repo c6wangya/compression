@@ -228,11 +228,28 @@ def train(args):
             train_dataset=train_dataset.batch(args.batchsize)
             train_dataset=train_dataset.prefetch(32)
 
+            if args.val_gap != 0:
+                val_files=glob.glob(args.val_glob)
+                if not val_files:
+                    raise RuntimeError(
+                            "No validation images found with glob '{}'.".format(args.val_glob))
+                
+                val_dataset=tf.data.Dataset.from_tensor_slices(val_files)
+                val_dataset=val_dataset.repeat()
+                val_dataset=val_dataset.map(
+                        read_png, num_parallel_calls=args.preprocess_threads)
+                val_dataset=val_dataset.batch(4)
+                val_dataset=val_dataset.prefetch(32)
+
         num_pixels=args.batchsize * args.patchsize ** 2
 
         # Get training patch from dataset.
         x=train_dataset.make_one_shot_iterator().get_next()
-        
+
+        # Get validation data from dataset
+        if args.val_gap != 0:
+            x_val = val_dataset.make_one_shot_iterator().get_next()
+
         # add uniform noise
         if args.noise:
             x = tf.add(x, tf.random_uniform(tf.shape(x), 0, 1.))
@@ -260,7 +277,7 @@ def train(args):
             guidance_transform = m.GrayScaleGuidance(rgb_type='RGB', down_scale=4)
     
         """ 1 gpu """
-        # Build autoencoder.
+        # Transform Image
         train_flow, train_jac = 0, 0
         if args.command == "train" or args.guidance_type == "baseline_pretrain":
             y = analysis_transform(x)
@@ -271,6 +288,18 @@ def train(args):
             y_tilde, likelihoods=entropy_bottleneck(y, training=True)
             x_tilde=synthesis_transform(y_tilde)
             flow_loss_weight = 0
+
+            # validation 
+            if args.val_gap != 0:
+                y_val = analysis_transform(x_val)
+                if args.clamp:
+                    y_val = tf.clip_by_value(y_val, 0, 1)
+                y_val_hat, _ = entropy_bottleneck(y_val, training=False)
+                # y^
+                x_val_hat_reuse_y = synthesis_transform(y_val_hat)
+                # y
+                x_val_hat = synthesis_transform(y_val)
+
         else:  # For InvCompressionNet
             if args.guidance_type == "baseline":
                 y_base = analysis_transform(x)
@@ -310,14 +339,58 @@ def train(args):
                     input_rev.append(tf.zeros(shape=zshape))
                 else:
                     input_rev.append(tf.random_normal(shape=zshape))
-            # input_rev = zshapes
             input_rev.append(y_tilde)
-            # input_rev.append(y)
             x_tilde, _ = inv_transform(input_rev, rev=True)
             x_tilde = x_tilde[-1]
-            # x_tilde = print_act_stats(x_tilde, "x_tilde")
             flow_loss_weight = args.flow_loss_weight
-        
+
+            # validation 
+            if args.val_gap != 0:
+                # baseline y
+                if args.no_aux and args.guidance_type == "baseline":
+                    y_val_base = analysis_transform()
+                out, _ = inv_transform([x])
+                
+                # z_samples and z_zeros
+                zshapes = []
+                if out[-1].get_shape()[-1] == args.channel_out[-1]:
+                    z = out[-1][:, :, :, args.channel_out[-1] - 1:]
+                else:
+                    z = out[-1][:, :, :, args.channel_out[-1]:]
+                zshapes.append(tf.shape(z))
+                z_samples = [tf.random_normal(shape=zshape) for zshape in zshapes]
+                z_zeros = [tf.zeros(shape=zshape) for zshape in zshapes]
+                
+                # y hat
+                y_val = tf.slice(out[-1], [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
+                if args.clamp: 
+                    y_val = tf.clip_by_value(y_val, 0, 1)
+                y_val_hat, _ = entropy_bottleneck(y_val, training=False)
+
+                # compute bpp
+                string = entropy_bottleneck.compress(y_val)
+                val_num_pixels = tf.cast(tf.reduce_prod(tf.shape(x_val)[:-1]), dtype=tf.float32)
+                val_bpp = len(string) * 8 / val_num_pixels
+                
+                # y^, z^
+                x_val_y_hat_z_hat, _ = inv_transform(z_samples + [y_val_hat], rev=True)
+                # y^, 0
+                x_val_y_hat_z_0, _ = inv_transform(z_zeros + [y_val_hat], rev=True)
+                # y, z^
+                x_val_y_z_hat, _ = inv_transform(z_samples + [y_val], rev=True)
+                # y, 0
+                x_val_y_z_0, _ = inv_transform(z_zeros + [y_val], rev=True)
+
+                # baseline y hat & x hat with y base
+                if args.no_aux and args.guidance_type == "baseline":
+                    y_base_val_hat, _ = entropy_bottleneck(y_val_base, training=False)
+                    # y base^, z^
+                    x_val_y_base_hat_z_hat, _ = inv_transform(z_samples + [y_base_val_hat], rev=True)
+                    # y base^, 0
+                    x_val_y_base_hat_z_0, _ = inv_transform(z_zeros + [y_base_val_hat], rev=True)
+                    string_base = entropy_bottleneck.compress(y_val_base)
+                    val_base_bpp = len(string_base) * 8 / val_num_pixels
+
         if args.guidance_type == "grayscale":
             y_guidance = guidance_transform(x)
         # Total number of bits divided by number of pixels.
@@ -400,6 +473,70 @@ def train(args):
         # eval_bpp, mse, psnr, msssim, num_pixels = inference(x,
         #         analysis_transform, entropy_bottleneck, synthesis_transform)
         # inference_op = tf.group(eval_bpp, mse, psnr, msssim, num_pixels)
+        if args.val_gap != 0:
+            def comp_psnr(img, img_hat):
+                rgb_psnr = tf.squeeze(tf.reduce_mean(tf.image.psnr(img_hat, img, 255)))
+                luma_img = tf.slice(tf.image.rgb_to_yuv(img), [0, 0, 0, 0], [-1, -1, -1, 1])
+                luma_img_hat = tf.slice(tf.image.rgb_to_yuv(img_hat), [0, 0, 0, 0], [-1, -1, -1, 1])
+                luma_psnr = tf.squeeze(tf.reduce_mean(tf.image.psnr(luma_img_hat, luma_img, 255)))
+                return rgb_psnr, luma_psnr
+            
+            if args.command == "train" or args.guidance_type == "baseline_pretrain":
+                # y^
+                val_rgb_psnr, val_luma_psnr = comp_psnr(x_val_hat, x_val)
+                # y
+                val_reuse_y_rgb_psnr, val_reuse_y_luma_psnr = comp_psnr(x_val_hat_reuse_y, x_val)
+                # summary 
+                tf.summary.scalar("validation-yhat-rgb-psnr", val_rgb_psnr)
+                tf.summary.scalar("validation-yhat-luma-psnr", val_luma_psnr)
+                tf.summary.scalar("validation-y-rgb-psnr", val_reuse_y_rgb_psnr)
+                tf.summary.scalar("validation-y-luma-psnr", val_reuse_y_luma_psnr)
+                tf.summary.scalar("validation-bpp", val_bpp)
+                # group operations
+                val_op_lst = [val_rgb_psnr, val_luma_psnr, 
+                         val_reuse_y_rgb_psnr, val_reuse_y_luma_psnr, 
+                         val_bpp]
+            else:
+                # y^, z^
+                val_y_hat_z_hat_rgb_psnr, val_y_hat_z_hat_luma_psnr = comp_psnr(x_val_y_hat_z_hat, x_val)
+                # y^, 0
+                val_y_hat_z_0_rgb_psnr, val_y_hat_z_0_luma_psnr = comp_psnr(x_val_y_hat_z_0, x_val)
+                # y, z^
+                val_y_z_hat_rgb_psnr, val_y_z_hat_luma_psnr = comp_psnr(x_val_y_z_hat, x_val)
+                # y, 0
+                val_y_z_0_rgb_psnr, val_y_z_0_luma_psnr = comp_psnr(x_val_y_z_0, x_val)
+                # summary
+                tf.summary.scalar("validation-yhat-zhat-rgb-psnr", val_y_hat_z_hat_rgb_psnr)
+                tf.summary.scalar("validation-yhat-zhat-luma-psnr", val_y_hat_z_hat_luma_psnr)
+                tf.summary.scalar("validation-yhat-z0-rgb-psnr", val_y_hat_z_0_rgb_psnr)
+                tf.summary.scalar("validation-yhat-z0-luma-psnr", val_y_hat_z_0_luma_psnr)
+                tf.summary.scalar("validation-y-zhat-rgb-psnr", val_y_z_hat_rgb_psnr)
+                tf.summary.scalar("validation-y-zhat-luma-psnr", val_y_z_hat_luma_psnr)
+                tf.summary.scalar("validation-y-z0-rgb-psnr", val_y_z_0_rgb_psnr)
+                tf.summary.scalar("validation-y-z0-luma-psnr", val_y_z_0_luma_psnr)
+                tf.summary.scalar("validation-bpp", val_bpp)
+                # group operations
+                val_op_lst = [val_y_hat_z_hat_rgb_psnr, val_y_hat_z_hat_luma_psnr, 
+                          val_y_hat_z_0_rgb_psnr, val_y_hat_z_0_luma_psnr, 
+                          val_y_z_hat_rgb_psnr, val_y_z_hat_luma_psnr, 
+                          val_y_z_0_rgb_psnr, val_y_z_0_luma_psnr, 
+                          val_bpp]
+                if args.no_aux and args.guidance_type == "baseline":
+                    # y base^, z^
+                    val_y_base_hat_z_hat_rgb_psnr, val_y_base_hat_z_hat_luma_psnr = comp_psnr(x_val_y_base_hat_z_hat, x_val)
+                    # y base^, 0
+                    val_y_base_hat_z_0_rgb_psnr, val_y_base_hat_z_0_luma_psnr = comp_psnr(x_val_y_base_hat_z_0, x_val)
+                    # summary 
+                    tf.summary.scalar("validation-ybasehat-zhat-rgb-psnr", val_y_base_hat_z_hat_rgb_psnr)
+                    tf.summary.scalar("validation-ybasehat-zhat-luma-psnr", val_y_base_hat_z_hat_luma_psnr)
+                    tf.summary.scalar("validation-ybasehat-z0-rgb-psnr", val_y_base_hat_z_0_rgb_psnr)
+                    tf.summary.scalar("validation-ybasehat-z0-luma-psnr", val_y_base_hat_z_0_luma_psnr)
+                    tf.summary.scalar("validation-base-bpp", val_base_bpp)
+                    # group operations
+                    val_op_lst += [val_y_base_hat_z_hat_rgb_psnr, val_y_base_hat_z_hat_luma_psnr, 
+                               val_y_base_hat_z_0_rgb_psnr, val_y_base_hat_z_0_luma_psnr, 
+                               val_base_bpp]
+            val_op = tf.group(*val_op_lst)
 
         tf.summary.scalar("loss", train_loss)
         tf.summary.scalar("bpp", train_bpp)
@@ -430,136 +567,68 @@ def train(args):
         #     total_parameters += variable_parameters
         # print("\n[network capacity] total num of parameters -> {}\n\n".format(total_parameters))
 
-        if not args.train_manually:
-            hooks=[
-                    tf.train.StopAtStepHook(last_step=args.last_step),
-                    tf.train.NanTensorHook(train_loss),
-                    ]
-            
-            # init saver for all the models
-            if "baseline" in args.guidance_type:
-                analysis_saver = tf.train.Saver(analysis_transform.trainable_variables, max_to_keep=1)
-                entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables, max_to_keep=1)
-                if args.guidance_type == "baseline_pretrain":
-                    synthesis_saver = tf.train.Saver(synthesis_transform.trainable_variables, max_to_keep=1)
-                elif args.guidance_type == "baseline":
-                    inv_saver = tf.train.Saver(inv_transform.trainable_variables, max_to_keep=1)
-                global_iters = 0
-
-            with tf.train.MonitoredTrainingSession(
-                        hooks=hooks, checkpoint_dir=args.checkpoint_dir,
-                        save_checkpoint_secs=1000, save_summaries_secs=300) as sess:
-                if "baseline" not in args.guidance_type or args.finetune:
-                    while not sess.should_stop():
-                        sess.run(train_op)
-                else:
-                    if args.finetune:
-                        if args.guidance_type == "baseline_pretrain":
-                            # load analysis, synthesis and entropybottleneck model
-                            restore_weights(synthesis_saver, get_session(sess), 
-                                    args.pretrain_checkpoint_dir + "/syn_net")
-                            restore_weights(analysis_saver, get_session(sess), 
-                                    args.pretrain_checkpoint_dir + "/ana_net")
-                            restore_weights(synthesis_saver, get_session(sess), 
-                                    args.pretrain_checkpoint_dir + "/entro_net")
-                        elif args.guidance_type == "baseline":
-                            # load invertible model
-                            restore_weights(inv_saver, get_session(sess), 
-                                    args.pretrain_checkpoint_dir + "/inv_net")
-                    if args.guidance_type == "baseline":
-                        # load analysis and entropybottleneck model
-                        restore_weights(analysis_saver, get_session(sess), 
-                                args.pretrain_checkpoint_dir + "/ana_net")
-                        restore_weights(entropy_saver, get_session(sess), 
-                                args.pretrain_checkpoint_dir + "/entro_net")
-                    while not sess.should_stop():
-                        sess.run(train_op)
-                        if global_iters % 5000 == 0:
-                            if args.guidance_type == "baseline_pretrain":
-                                # save analysis, synthesis and entropybottleneck model
-                                save_weights(synthesis_saver, get_session(sess), 
-                                        args.checkpoint_dir + '/syn_net', global_iters)
-                                save_weights(analysis_saver, get_session(sess), 
-                                        args.checkpoint_dir + '/ana_net', global_iters)
-                                save_weights(entropy_saver, get_session(sess), 
-                                        args.checkpoint_dir + '/entro_net', global_iters)
-                            elif args.guidance_type == "baseline":
-                                save_weights(inv_saver, get_session(sess), 
-                                        args.checkpoint_dir + '/inv_net', global_iters)
-                                save_weights(entropy_saver, get_session(sess), 
-                                        args.checkpoint_dir + '/entro_net', global_iters)
-                        global_iters += 1
-        else:  # training without MonitoredTrainingSession... that has been proved perform poorly
-            init_op = tf.global_variables_initializer()
-            # init saver for all the models
-            analysis_saver = tf.train.Saver(analysis_transform.trainable_variables)
-            entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables)
+        hooks=[
+                tf.train.StopAtStepHook(last_step=args.last_step),
+                tf.train.NanTensorHook(train_loss),
+                ]
+        
+        # init saver for all the models
+        if "baseline" in args.guidance_type:
+            analysis_saver = tf.train.Saver(analysis_transform.trainable_variables, max_to_keep=1)
+            entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables, max_to_keep=1)
             if args.guidance_type == "baseline_pretrain":
-                synthesis_saver = tf.train.Saver(synthesis_transform.trainable_variables)
+                synthesis_saver = tf.train.Saver(synthesis_transform.trainable_variables, max_to_keep=1)
             elif args.guidance_type == "baseline":
-                inv_saver = tf.train.Saver(inv_transform.trainable_variables)
+                inv_saver = tf.train.Saver(inv_transform.trainable_variables, max_to_keep=1)
+            global_iters = 0
 
-            num_epoches = args.last_step * args.batchsize // args.num_data
-            num_batches = args.num_data // args.batchsize
-            with tf.Session() as sess:
-                suffix = ".ckpt"
-                sess.run(init_op)
-                if not os.path.exists(args.checkpoint_dir):
-                    os.mkdir(path=args.checkpoint_dir)
+        with tf.train.MonitoredTrainingSession(
+                    hooks=hooks, checkpoint_dir=args.checkpoint_dir,
+                    save_checkpoint_secs=1000, save_summaries_secs=300) as sess:
+            if "baseline" not in args.guidance_type or args.finetune:
+                while not sess.should_stop():
+                    sess.run(train_op)
+                    if args.val_gap != 0 and global_iters % args.val_gap == 0:
+                        sess.run(val_op)
+            else:
                 if args.finetune:
                     if args.guidance_type == "baseline_pretrain":
                         # load analysis, synthesis and entropybottleneck model
-                        synthesis_saver.restore(sess, save_path=args.checkpoint_dir + "/syn_net" + suffix)
-                        analysis_saver.restore(sess, save_path=args.checkpoint_dir + "/ana_net" + suffix)
-                        entropy_saver.restore(sess, save_path=args.checkpoint_dir + "/entro_net" + suffix)
+                        restore_weights(synthesis_saver, get_session(sess), 
+                                args.pretrain_checkpoint_dir + "/syn_net")
+                        restore_weights(analysis_saver, get_session(sess), 
+                                args.pretrain_checkpoint_dir + "/ana_net")
+                        restore_weights(synthesis_saver, get_session(sess), 
+                                args.pretrain_checkpoint_dir + "/entro_net")
                     elif args.guidance_type == "baseline":
-                        # load analysis, invertible and entropybottleneck model
-                        inv_saver.restore(sess, save_path=args.checkpoint_dir + "/inv_net" + suffix)
-                # train
-                global_iter = 0
-                start_time = datetime.datetime.now()
-                with tf.device('/gpu:' + str(args.gpu_device)):
-                    for epoch_iter in range(num_epoches):
-                        for i in range(num_batches):
-                            if args.guidance_type == "baseline_pretrain":
-                                # run train op
-                                sess.run(train_op)
-                                if epoch_iter % 5 == 0:
-                                    # save analysis, synthesis and entropybottleneck model
-                                    synthesis_saver.save(sess, save_path=args.checkpoint_dir + "/syn_net" + suffix)
-                                    analysis_saver.save(sess, save_path=args.checkpoint_dir + "/ana_net" + suffix)
-                                    entropy_saver.save(sess, save_path=args.checkpoint_dir + "/entro_net" + suffix)
-                            else:  # baseline guidance
-                                # load analysis network 
-                                analysis_saver.restore(sess, save_path=args.checkpoint_dir + "/ana_net" + suffix)
-                                # run train op
-                                sess.run(train_op)
-                                if epoch_iter % 5 == 0:
-                                    inv_saver.save(sess, save_path=args.checkpoint_dir + "/inv_net" + suffix)
-                            global_iter += 1
-                            if global_iter % 3 == 0:
-                                end_time = datetime.datetime.now()
-                                interval = (end_time - start_time).seconds
-                                print("[epoch {}] training speed: {}/s, ".format(epoch_iter, round(3 / interval, 5)))
-                                start_time = datetime.datetime.now()
-
-            # # checkpint for analysis network that partially load weights 
-            # latest=tf.train.latest_checkpoint(checkpoint_dir=args.pretrain_checkpoint_dir)
-            # analysis_checkpoint = tf.train.Checkpoint(GoodModel=analysis_transform)
-            # analysis_checkpoint.restore(save_path=latest)
-
-            # with tf.Session() as sess:
-            #     if args.finetune:
-            #         # checkpoint for main network
-            #         latest = tf.train.latest_checkpoint(checkpoint_dir=args.checkpoint_dir)
-            #         tf.train.Saver(filtered_vars).restore(sess, save_path=latest)
-
-            #     for epoch_iter in range(num_epoches):
-            #         for step in range(num_batches):
-            #             sess.run(train_op)
-            #         if epoch_iter % 5 == 0:
-            #             saver = tf.train.Saver(filtered_vars)
-            #             saver.save(sess, args.checkpoint_dir + "model.ckpt")
+                        # load invertible model
+                        restore_weights(inv_saver, get_session(sess), 
+                                args.pretrain_checkpoint_dir + "/inv_net")
+                if args.guidance_type == "baseline":
+                    # load analysis and entropybottleneck model
+                    restore_weights(analysis_saver, get_session(sess), 
+                            args.pretrain_checkpoint_dir + "/ana_net")
+                    restore_weights(entropy_saver, get_session(sess), 
+                            args.pretrain_checkpoint_dir + "/entro_net")
+                while not sess.should_stop():
+                    sess.run(train_op)
+                    if args.val_gap != 0 and global_iters % args.val_gap == 0:
+                        sess.run(val_op)
+                    if global_iters % 5000 == 0:
+                        if args.guidance_type == "baseline_pretrain":
+                            # save analysis, synthesis and entropybottleneck model
+                            save_weights(synthesis_saver, get_session(sess), 
+                                    args.checkpoint_dir + '/syn_net', global_iters)
+                            save_weights(analysis_saver, get_session(sess), 
+                                    args.checkpoint_dir + '/ana_net', global_iters)
+                            save_weights(entropy_saver, get_session(sess), 
+                                    args.checkpoint_dir + '/entro_net', global_iters)
+                        elif args.guidance_type == "baseline":
+                            save_weights(inv_saver, get_session(sess), 
+                                    args.checkpoint_dir + '/inv_net', global_iters)
+                            save_weights(entropy_saver, get_session(sess), 
+                                    args.checkpoint_dir + '/entro_net', global_iters)
+                    global_iters += 1
 
 
 def compress(args):
@@ -989,8 +1058,8 @@ def parse_args(argv):
             "--finetune", action="store_true",
             help="finetune the inv network.")
     train_cmd.add_argument(
-            "--train_manually", action="store_true",
-            help="how to train the network.")
+            "--val_gap", type=int, default=0,
+            help="validation gap, default = 0")
     
     # 'inv_train' subcommand
     inv_train_cmd=subparsers.add_parser(
@@ -1102,9 +1171,6 @@ def parse_args(argv):
             "--finetune", action="store_true",
             help="finetune the inv network.")
     inv_train_cmd.add_argument(
-            "--train_manually", action="store_true",
-            help="how to train the network.")
-    inv_train_cmd.add_argument(
             "--beta", type=float, default=1,
             help="Beta for rate-distortion tradeoff.")
     inv_train_cmd.add_argument(
@@ -1120,6 +1186,9 @@ def parse_args(argv):
     inv_train_cmd.add_argument(
             "--train_jacobian", action="store_true",
             help="whether jacobian loss to train.")
+    inv_train_cmd.add_argument(
+            "--val_gap", type=int, default=0,
+            help="validation gap, default = 0")
 
     # 'compress' subcommand.
     compress_cmd=subparsers.add_parser(
