@@ -367,10 +367,10 @@ def train(args):
                     y_val = tf.clip_by_value(y_val, 0, 1)
                 y_val_hat, _ = entropy_bottleneck(y_val, training=False)
 
-                # compute bpp
-                string = entropy_bottleneck.compress(y_val)
-                val_num_pixels = tf.cast(tf.reduce_prod(tf.shape(x_val)[:-1]), dtype=tf.float32)
-                val_bpp = len(string) * 8 / val_num_pixels
+                # # compute bpp
+                # string = entropy_bottleneck.compress(y_val)
+                # val_num_pixels = tf.cast(tf.reduce_prod(tf.shape(x_val)[:-1]), dtype=tf.float32)
+                # val_bpp = len(string) * 8 / val_num_pixels
                 
                 # y^, z^
                 x_val_y_hat_z_hat, _ = inv_transform(z_samples + [y_val_hat], rev=True)
@@ -388,8 +388,8 @@ def train(args):
                     x_val_y_base_hat_z_hat, _ = inv_transform(z_samples + [y_base_val_hat], rev=True)
                     # y base^, 0
                     x_val_y_base_hat_z_0, _ = inv_transform(z_zeros + [y_base_val_hat], rev=True)
-                    string_base = entropy_bottleneck.compress(y_val_base)
-                    val_base_bpp = len(string_base) * 8 / val_num_pixels
+                    # string_base = entropy_bottleneck.compress(y_val_base)
+                    # val_base_bpp = len(string_base) * 8 / val_num_pixels
 
         if args.guidance_type == "grayscale":
             y_guidance = guidance_transform(x)
@@ -491,11 +491,11 @@ def train(args):
                 tf.summary.scalar("validation-yhat-luma-psnr", val_luma_psnr)
                 tf.summary.scalar("validation-y-rgb-psnr", val_reuse_y_rgb_psnr)
                 tf.summary.scalar("validation-y-luma-psnr", val_reuse_y_luma_psnr)
-                tf.summary.scalar("validation-bpp", val_bpp)
+                # tf.summary.scalar("validation-bpp", val_bpp)
                 # group operations
                 val_op_lst = [val_rgb_psnr, val_luma_psnr, 
-                         val_reuse_y_rgb_psnr, val_reuse_y_luma_psnr, 
-                         val_bpp]
+                         val_reuse_y_rgb_psnr, val_reuse_y_luma_psnr]
+                        #  val_bpp]
             else:
                 # y^, z^
                 val_y_hat_z_hat_rgb_psnr, val_y_hat_z_hat_luma_psnr = comp_psnr(x_val_y_hat_z_hat, x_val)
@@ -514,13 +514,13 @@ def train(args):
                 tf.summary.scalar("validation-y-zhat-luma-psnr", val_y_z_hat_luma_psnr)
                 tf.summary.scalar("validation-y-z0-rgb-psnr", val_y_z_0_rgb_psnr)
                 tf.summary.scalar("validation-y-z0-luma-psnr", val_y_z_0_luma_psnr)
-                tf.summary.scalar("validation-bpp", val_bpp)
+                # tf.summary.scalar("validation-bpp", val_bpp)
                 # group operations
                 val_op_lst = [val_y_hat_z_hat_rgb_psnr, val_y_hat_z_hat_luma_psnr, 
                           val_y_hat_z_0_rgb_psnr, val_y_hat_z_0_luma_psnr, 
                           val_y_z_hat_rgb_psnr, val_y_z_hat_luma_psnr, 
-                          val_y_z_0_rgb_psnr, val_y_z_0_luma_psnr, 
-                          val_bpp]
+                          val_y_z_0_rgb_psnr, val_y_z_0_luma_psnr]
+                        #   val_bpp]
                 if args.no_aux and args.guidance_type == "baseline":
                     # y base^, z^
                     val_y_base_hat_z_hat_rgb_psnr, val_y_base_hat_z_hat_luma_psnr = comp_psnr(x_val_y_base_hat_z_hat, x_val)
@@ -531,11 +531,11 @@ def train(args):
                     tf.summary.scalar("validation-ybasehat-zhat-luma-psnr", val_y_base_hat_z_hat_luma_psnr)
                     tf.summary.scalar("validation-ybasehat-z0-rgb-psnr", val_y_base_hat_z_0_rgb_psnr)
                     tf.summary.scalar("validation-ybasehat-z0-luma-psnr", val_y_base_hat_z_0_luma_psnr)
-                    tf.summary.scalar("validation-base-bpp", val_base_bpp)
+                    # tf.summary.scalar("validation-base-bpp", val_base_bpp)
                     # group operations
                     val_op_lst += [val_y_base_hat_z_hat_rgb_psnr, val_y_base_hat_z_hat_luma_psnr, 
-                               val_y_base_hat_z_0_rgb_psnr, val_y_base_hat_z_0_luma_psnr, 
-                               val_base_bpp]
+                               val_y_base_hat_z_0_rgb_psnr, val_y_base_hat_z_0_luma_psnr]
+                            #    val_base_bpp]
             val_op = tf.group(*val_op_lst)
 
         tf.summary.scalar("loss", train_loss)
