@@ -589,6 +589,7 @@ def train(args):
                 while not sess.should_stop():
                     sess.run(train_op)
                     if args.val_gap != 0 and global_iters % args.val_gap == 0:
+                        # for i in range(24)
                         sess.run(val_op)
             else:
                 if args.finetune:
@@ -1189,6 +1190,10 @@ def parse_args(argv):
     inv_train_cmd.add_argument(
             "--val_gap", type=int, default=0,
             help="validation gap, default = 0")
+    inv_train_cmd.add_argument(
+            "--val_glob", default="images/*.png",
+            help="Glob pattern identifying validation data. This pattern must expand "
+            "to a list of RGB images in PNG format.")
 
     # 'compress' subcommand.
     compress_cmd=subparsers.add_parser(
@@ -1355,8 +1360,6 @@ def main(args):
     elif args.command == "multi_compress":
         print("multi_compress!")
         multi_compress(args)
-    elif args.command == "evaluation":
-        evaluation(args)
 
 if __name__ == "__main__":
     app.run(main, flags_parser=parse_args)
