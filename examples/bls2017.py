@@ -268,7 +268,7 @@ def train(args):
             inv_transform = m.InvCompressionNet(channel_in=3, channel_out=args.channel_out, 
                     blk_type=args.blk_type, num_filters=args.num_filters,
                     kernel_size=args.kernel_size, residual=args.residual, 
-                    nin=args.nin, gdn=args.gdn, n_ops=args.n_ops, 
+                    nin=args.nin, norm=args.norm, n_ops=args.n_ops, 
                     downsample_type=args.downsample_type, inv_conv=(not args.non1x1))
             if args.guidance_type == "baseline_pretrain":
                 analysis_transform = m.AnalysisTransform(args.channel_out[0])
@@ -675,7 +675,7 @@ def compress(args):
             inv_transform = m.InvCompressionNet(channel_in=3, channel_out=args.channel_out, 
                     blk_type=args.blk_type, num_filters=args.num_filters,
                     kernel_size=args.kernel_size, residual=args.residual, 
-                    nin=args.nin, gdn=args.gdn, n_ops=args.n_ops, 
+                    nin=args.nin, norm=args.norm, n_ops=args.n_ops, 
                     downsample_type=args.downsample_type, inv_conv=(not args.non1x1))
             if "baseline" in args.guidance_type:
                 analysis_transform = m.AnalysisTransform(args.channel_out[0])
@@ -1084,8 +1084,8 @@ def parse_args(argv):
                 "--nin", action="store_true",
                 help="use 1x1 conv in subnet.")
         cmd.add_argument(
-                "--gdn", action="store_true",
-                help="use GDN in subnet.")
+                "--norm", default="bn",
+                help="which type of norm to use.")
         cmd.add_argument(
                 "--clamp", action="store_true",
                 help="Do clamp on y.")
@@ -1224,8 +1224,8 @@ def parse_args(argv):
                 "--nin", action="store_true",
                 help="use 1x1 conv in subnet.")
         cmd.add_argument(
-                "--gdn", action="store_true",
-                help="use GDN in subnet.")
+                "--norm", default="bn",
+                help="which type of norm to use.")
         cmd.add_argument(
                 "--reuse_y", action="store_true",
                 help="skip quantization and AE&AD.")
