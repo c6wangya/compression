@@ -240,7 +240,7 @@ def train(args):
                 val_dataset=val_dataset.map(
                         read_png, num_parallel_calls=args.preprocess_threads)
                 val_dataset=val_dataset.map(lambda x: tf.random_crop(x, (512, 512, 3)))
-                val_dataset=val_dataset.batch(24)
+                val_dataset=val_dataset.batch(1)
                 val_dataset=val_dataset.prefetch(32)
 
         num_pixels=args.batchsize * args.patchsize ** 2
@@ -299,7 +299,7 @@ def train(args):
                 y_val_hat, _ = entropy_bottleneck(y_val, training=False)
                 # compute bpp
                 string = entropy_bottleneck.compress(y_val)
-                val_num_pixels = 24 * 512 ** 2
+                val_num_pixels = 1 * 512 ** 2
                 string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
                 val_bpp = tf.math.divide(string_len * 8, val_num_pixels)
                 # y^
@@ -375,9 +375,9 @@ def train(args):
 
                 # compute bpp
                 string = entropy_bottleneck.compress(y_val)
-                val_num_pixels = 24 * 512 ** 2
+                val_num_pixels = 1 * 512 ** 2
                 string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
-                val_bpp = tf.math.divide(string_len, val_num_pixels)
+                val_bpp = tf.math.divide(string_len * 8, val_num_pixels)
                 # y^, z^
                 x_val_y_hat_z_hat, _ = inv_transform(z_samples + [y_val_hat], rev=True)
                 # y^, 0
@@ -613,7 +613,7 @@ def train(args):
                                 args.pretrain_checkpoint_dir + "/syn_net")
                         restore_weights(analysis_saver, get_session(sess), 
                                 args.pretrain_checkpoint_dir + "/ana_net")
-                        restore_weights(synthesis_saver, get_session(sess), 
+                        restore_weights(entropy_saver, get_session(sess), 
                                 args.pretrain_checkpoint_dir + "/entro_net")
                     elif args.guidance_type == "baseline":
                         # load invertible model
@@ -1005,210 +1005,138 @@ def parse_args(argv):
             "train",
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             description="Trains (or continues to train) a new model.")
-    train_cmd.add_argument(
-            "--train_glob", default="images/*.png",
-            help="Glob pattern identifying training data. This pattern must expand "
-            "to a list of RGB images in PNG format.")
-    train_cmd.add_argument(
-            "--batchsize", type=int, default=8,
-            help="Batch size for training.")
-    train_cmd.add_argument(
-            "--patchsize", type=int, default=256,
-            help="Size of image patches for training.")
-    train_cmd.add_argument(
-            "--lambda", type=float, default=0.01, dest="lmbda",
-            help="Lambda for rate-distortion tradeoff.")
-    train_cmd.add_argument(
-            "--last_step", type=int, default=1000000,
-            help="Train up to this number of steps.")
-    train_cmd.add_argument(
-            "--preprocess_threads", type=int, default=16,
-            help="Number of CPU threads to use for parallel decoding of training "
-            "images.")
-    train_cmd.add_argument(
-            "--num_gpus", type=int, default=1,
-            help="Number of gpus used for training.")
-    train_cmd.add_argument(
-            "--gpu_device", type=int, default=0,
-            help="gpu device to be used.")
-    train_cmd.add_argument(
-            "--checkpoint_dir", default="train",
-            help="Directory where to save/load model checkpoints.")
-    train_cmd.add_argument(
-            "--noise", action="store_true",
-            help="add noise to image patch.")
-    train_cmd.add_argument(
-            "--downsample_scale", type=float, default=0.75, dest="scale",
-            help="downsample scale for data preprocessing..")
-    train_cmd.add_argument(
-            "--adjust_saturation", action="store_true",
-            help="adjust saturation of images.")
-    train_cmd.add_argument(
-            "--clamp", action="store_true",
-            help="Do clamp on y.")
-    train_cmd.add_argument(
-            "--grad_clipping", type=float, default=100,
-            help="Clipping gradient.")
-    train_cmd.add_argument(
-            "--quant_grad", action="store_true",
-            help="quantize with gradient.")
-    train_cmd.add_argument(
-            "--guidance_type", default="none",
-            help="guidance type.")
-    train_cmd.add_argument(
-            "--y_guidance_weight", type=float, default=0.,
-            help="flow loss weight.")
-    train_cmd.add_argument(
-            "--main_lr", type=float, default=1e-4,
-            help="main learning rate.")
-    train_cmd.add_argument(
-            "--aux_lr", type=float, default=1e-3,
-            help="aux learning rate.")
-    train_cmd.add_argument(
-            "--pretrain_checkpoint_dir", default="train",
-            help="Directory where to save/load model checkpoints.")
-    train_cmd.add_argument(
-            "--num_data", type=int, default=10000,
-            help="size of dataset")
-    train_cmd.add_argument(
-            "--finetune", action="store_true",
-            help="finetune the inv network.")
-    train_cmd.add_argument(
-            "--val_gap", type=int, default=0,
-            help="validation gap, default = 0")
-    
-    # 'inv_train' subcommand
     inv_train_cmd=subparsers.add_parser(
             "inv_train",
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             description="Trains (or continues to train) a new model.")
-    inv_train_cmd.add_argument(
-            "--train_glob", default="images/*.png",
-            help="Glob pattern identifying training data. This pattern must expand "
-            "to a list of RGB images in PNG format.")
-    inv_train_cmd.add_argument(
-            "--batchsize", type=int, default=8,
-            help="Batch size for training.")
-    inv_train_cmd.add_argument(
-            "--patchsize", type=int, default=256,
-            help="Size of image patches for training.")
-    inv_train_cmd.add_argument(
-            "--lambda", type=float, default=0.01, dest="lmbda",
-            help="Lambda for rate-distortion tradeoff.")
-    inv_train_cmd.add_argument(
-            "--last_step", type=int, default=1000000,
-            help="Train up to this number of steps.")
-    inv_train_cmd.add_argument(
-            "--preprocess_threads", type=int, default=16,
-            help="Number of CPU threads to use for parallel decoding of training "
-            "images.")
-    inv_train_cmd.add_argument(
-            "--num_gpus", type=int, default=1,
-            help="Number of gpus used for training.")
-    inv_train_cmd.add_argument(
-            "--gpu_device", type=int, default=0,
-            help="gpu device to be used.")
-    inv_train_cmd.add_argument(
-            "--checkpoint_dir", default="train",
-            help="Directory where to save/load model checkpoints.")
-    inv_train_cmd.add_argument(
-            "--noise", action="store_true",
-            help="add noise to image patch.")
-    inv_train_cmd.add_argument(
-            "--downsample_scale", type=float, default=0.75, dest="scale",
-            help="downsample scale for data preprocessing..")
-    inv_train_cmd.add_argument(
-            "--adjust_saturation", action="store_true",
-            help="adjust saturation of images.")
-    inv_train_cmd.add_argument(
-            "--blk_num", type=int, default=4,
-            help="num of blocks for flow net")
-    inv_train_cmd.add_argument(
-            "--channel_out", nargs='+', type=int, default=[3, 3])
-    inv_train_cmd.add_argument(
-            "--upscale_log", type=int, default=2,
-            help="upscale times")
-    inv_train_cmd.add_argument(
-            "--kernel_size", type=int, default=3,
-            help="kernel size of subunit conv")
-    inv_train_cmd.add_argument(
-            "--flow_loss_weight", type=float, default=1e-1,
-            help="flow loss weight.")
-    inv_train_cmd.add_argument(
-            "--y_guidance_weight", type=float, default=0.,
-            help="flow loss weight.")
-    inv_train_cmd.add_argument(
-            "--blk_type", default="dense",
-            help="select which type of block to use")
-    inv_train_cmd.add_argument(
-            "--non1x1", action="store_true",
-            help="train without 1x1 invertible conv.")
-    inv_train_cmd.add_argument(
-            "--main_lr", type=float, default=1e-4,
-            help="main learning rate.")
-    inv_train_cmd.add_argument(
-            "--aux_lr", type=float, default=1e-3,
-            help="aux learning rate.")
-    inv_train_cmd.add_argument(
-            "--residual", action="store_true",
-            help="use residual block in subnet.")
-    inv_train_cmd.add_argument(
-            "--nin", action="store_true",
-            help="use 1x1 conv in subnet.")
-    inv_train_cmd.add_argument(
-            "--gdn", action="store_true",
-            help="use GDN in subnet.")
-    inv_train_cmd.add_argument(
-            "--clamp", action="store_true",
-            help="Do clamp on y.")
-    inv_train_cmd.add_argument(
-            "--grad_clipping", type=float, default=100,
-            help="Clipping gradient.")
-    inv_train_cmd.add_argument(
-            "--guidance_type", default="none",
-            help="guidance type.")
-    inv_train_cmd.add_argument(
-            "--quant_grad", action="store_true",
-            help="quantize with gradient.")
-    inv_train_cmd.add_argument(
-            "--n_ops", type=int, default=3,
-            help="number of operations in subnet")
-    inv_train_cmd.add_argument(
-            "--downsample_type", default="haar",
-            help="type of downsample ('haar' or 'squeeze').")
+    for cmd in [train_cmd, inv_train_cmd]:
+        cmd.add_argument(
+                "--train_glob", default="images/*.png",
+                help="Glob pattern identifying training data. This pattern must expand "
+                "to a list of RGB images in PNG format.")
+        cmd.add_argument(
+                "--batchsize", type=int, default=8,
+                help="Batch size for training.")
+        cmd.add_argument(
+                "--patchsize", type=int, default=256,
+                help="Size of image patches for training.")
+        cmd.add_argument(
+                "--lambda", type=float, default=0.01, dest="lmbda",
+                help="Lambda for rate-distortion tradeoff.")
+        cmd.add_argument(
+                "--last_step", type=int, default=1000000,
+                help="Train up to this number of steps.")
+        cmd.add_argument(
+                "--preprocess_threads", type=int, default=16,
+                help="Number of CPU threads to use for parallel decoding of training "
+                "images.")
+        cmd.add_argument(
+                "--num_gpus", type=int, default=1,
+                help="Number of gpus used for training.")
+        cmd.add_argument(
+                "--gpu_device", type=int, default=0,
+                help="gpu device to be used.")
+        cmd.add_argument(
+                "--checkpoint_dir", default="train",
+                help="Directory where to save/load model checkpoints.")
+        cmd.add_argument(
+                "--noise", action="store_true",
+                help="add noise to image patch.")
+        cmd.add_argument(
+                "--downsample_scale", type=float, default=0.75, dest="scale",
+                help="downsample scale for data preprocessing..")
+        cmd.add_argument(
+                "--adjust_saturation", action="store_true",
+                help="adjust saturation of images.")
+        cmd.add_argument(
+                "--blk_num", type=int, default=4,
+                help="num of blocks for flow net")
+        cmd.add_argument(
+                "--channel_out", nargs='+', type=int, default=[3, 3])
+        cmd.add_argument(
+                "--upscale_log", type=int, default=2,
+                help="upscale times")
+        cmd.add_argument(
+                "--kernel_size", type=int, default=3,
+                help="kernel size of subunit conv")
+        cmd.add_argument(
+                "--flow_loss_weight", type=float, default=1e-1,
+                help="flow loss weight.")
+        cmd.add_argument(
+                "--y_guidance_weight", type=float, default=0.,
+                help="flow loss weight.")
+        cmd.add_argument(
+                "--blk_type", default="dense",
+                help="select which type of block to use")
+        cmd.add_argument(
+                "--non1x1", action="store_true",
+                help="train without 1x1 invertible conv.")
+        cmd.add_argument(
+                "--main_lr", type=float, default=1e-4,
+                help="main learning rate.")
+        cmd.add_argument(
+                "--aux_lr", type=float, default=1e-3,
+                help="aux learning rate.")
+        cmd.add_argument(
+                "--residual", action="store_true",
+                help="use residual block in subnet.")
+        cmd.add_argument(
+                "--nin", action="store_true",
+                help="use 1x1 conv in subnet.")
+        cmd.add_argument(
+                "--gdn", action="store_true",
+                help="use GDN in subnet.")
+        cmd.add_argument(
+                "--clamp", action="store_true",
+                help="Do clamp on y.")
+        cmd.add_argument(
+                "--grad_clipping", type=float, default=100,
+                help="Clipping gradient.")
+        cmd.add_argument(
+                "--guidance_type", default="none",
+                help="guidance type.")
+        cmd.add_argument(
+                "--quant_grad", action="store_true",
+                help="quantize with gradient.")
+        cmd.add_argument(
+                "--n_ops", type=int, default=3,
+                help="number of operations in subnet")
+        cmd.add_argument(
+                "--downsample_type", default="haar",
+                help="type of downsample ('haar' or 'squeeze').")
 
-    inv_train_cmd.add_argument(
-            "--pretrain_checkpoint_dir", default="train",
-            help="Directory where to save/load model checkpoints.")
-    inv_train_cmd.add_argument(
-            "--num_data", type=int, default=10000,
-            help="size of dataset")
-    inv_train_cmd.add_argument(
-            "--finetune", action="store_true",
-            help="finetune the inv network.")
-    inv_train_cmd.add_argument(
-            "--beta", type=float, default=1,
-            help="Beta for rate-distortion tradeoff.")
-    inv_train_cmd.add_argument(
-            "--freeze_aux", action="store_true",
-            help="whether freeze auxiliary net when training.")
-    inv_train_cmd.add_argument(
-            "--zero_z", action="store_true",
-            help="whether set z to zeros.")
-    inv_train_cmd.add_argument(
-            "--no_aux", action="store_true",
-            help="whether use aux net to train. \
-                (if not then manually round and pass gradient).")
-    inv_train_cmd.add_argument(
-            "--train_jacobian", action="store_true",
-            help="whether jacobian loss to train.")
-    inv_train_cmd.add_argument(
-            "--val_gap", type=int, default=0,
-            help="validation gap, default = 0")
-    inv_train_cmd.add_argument(
-            "--val_glob", default="images/*.png",
-            help="Glob pattern identifying validation data. This pattern must expand "
-            "to a list of RGB images in PNG format.")
+        cmd.add_argument(
+                "--pretrain_checkpoint_dir", default="train",
+                help="Directory where to save/load model checkpoints.")
+        cmd.add_argument(
+                "--num_data", type=int, default=10000,
+                help="size of dataset")
+        cmd.add_argument(
+                "--finetune", action="store_true",
+                help="finetune the inv network.")
+        cmd.add_argument(
+                "--beta", type=float, default=1,
+                help="Beta for rate-distortion tradeoff.")
+        cmd.add_argument(
+                "--freeze_aux", action="store_true",
+                help="whether freeze auxiliary net when training.")
+        cmd.add_argument(
+                "--zero_z", action="store_true",
+                help="whether set z to zeros.")
+        cmd.add_argument(
+                "--no_aux", action="store_true",
+                help="whether use aux net to train. \
+                    (if not then manually round and pass gradient).")
+        cmd.add_argument(
+                "--train_jacobian", action="store_true",
+                help="whether jacobian loss to train.")
+        cmd.add_argument(
+                "--val_gap", type=int, default=0,
+                help="validation gap, default = 0")
+        cmd.add_argument(
+                "--val_glob", default="images/*.png",
+                help="Glob pattern identifying validation data. This pattern must expand "
+                "to a list of RGB images in PNG format.")
 
     # 'compress' subcommand.
     compress_cmd=subparsers.add_parser(
