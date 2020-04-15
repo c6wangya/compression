@@ -229,6 +229,7 @@ def train(args):
             train_dataset=train_dataset.prefetch(32)
 
             if args.val_gap != 0:
+                tf.set_random_seed(1234)
                 val_files=glob.glob(args.val_glob)
                 if not val_files:
                     raise RuntimeError(
@@ -238,7 +239,8 @@ def train(args):
                 val_dataset=val_dataset.repeat()
                 val_dataset=val_dataset.map(
                         read_png, num_parallel_calls=args.preprocess_threads)
-                val_dataset=val_dataset.batch(4)
+                val_dataset=val_dataset.map(lambda x: tf.random_crop(x, (512, 512, 3)))
+                val_dataset=val_dataset.batch(24)
                 val_dataset=val_dataset.prefetch(32)
 
         num_pixels=args.batchsize * args.patchsize ** 2
@@ -249,6 +251,7 @@ def train(args):
         # Get validation data from dataset
         if args.val_gap != 0:
             x_val = val_dataset.make_one_shot_iterator().get_next()
+            print(x_val)
 
         # add uniform noise
         if args.noise:
@@ -288,18 +291,21 @@ def train(args):
             y_tilde, likelihoods=entropy_bottleneck(y, training=True)
             x_tilde=synthesis_transform(y_tilde)
             flow_loss_weight = 0
-
             # validation 
             if args.val_gap != 0:
                 y_val = analysis_transform(x_val)
                 if args.clamp:
                     y_val = tf.clip_by_value(y_val, 0, 1)
                 y_val_hat, _ = entropy_bottleneck(y_val, training=False)
+                # compute bpp
+                string = entropy_bottleneck.compress(y_val)
+                val_num_pixels = 24 * 512 ** 2
+                string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
+                val_bpp = tf.math.divide(string_len * 8, val_num_pixels)
                 # y^
                 x_val_hat_reuse_y = synthesis_transform(y_val_hat)
                 # y
                 x_val_hat = synthesis_transform(y_val)
-
         else:  # For InvCompressionNet
             if args.guidance_type == "baseline":
                 y_base = analysis_transform(x)
@@ -349,7 +355,7 @@ def train(args):
                 # baseline y
                 if args.no_aux and args.guidance_type == "baseline":
                     y_val_base = analysis_transform()
-                out, _ = inv_transform([x])
+                out, _ = inv_transform([x_val])
                 
                 # z_samples and z_zeros
                 zshapes = []
@@ -367,11 +373,11 @@ def train(args):
                     y_val = tf.clip_by_value(y_val, 0, 1)
                 y_val_hat, _ = entropy_bottleneck(y_val, training=False)
 
-                # # compute bpp
-                # string = entropy_bottleneck.compress(y_val)
-                # val_num_pixels = tf.cast(tf.reduce_prod(tf.shape(x_val)[:-1]), dtype=tf.float32)
-                # val_bpp = len(string) * 8 / val_num_pixels
-                
+                # compute bpp
+                string = entropy_bottleneck.compress(y_val)
+                val_num_pixels = 24 * 512 ** 2
+                string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
+                val_bpp = tf.math.divide(string_len, val_num_pixels)
                 # y^, z^
                 x_val_y_hat_z_hat, _ = inv_transform(z_samples + [y_val_hat], rev=True)
                 # y^, 0
@@ -388,8 +394,10 @@ def train(args):
                     x_val_y_base_hat_z_hat, _ = inv_transform(z_samples + [y_base_val_hat], rev=True)
                     # y base^, 0
                     x_val_y_base_hat_z_0, _ = inv_transform(z_zeros + [y_base_val_hat], rev=True)
-                    # string_base = entropy_bottleneck.compress(y_val_base)
-                    # val_base_bpp = len(string_base) * 8 / val_num_pixels
+                    string_base = entropy_bottleneck.compress(y_val_base)
+                    string_base_len = tf.cast(tf.strings.length(string_base), dtype=tf.float32)
+                    string_base_len = tf.reduce_sum(string_base_len)
+                    val_base_bpp = tf.math.divide(string_base_len, val_num_pixels)
 
         if args.guidance_type == "grayscale":
             y_guidance = guidance_transform(x)
@@ -470,11 +478,12 @@ def train(args):
         else:
             train_op=tf.group(main_step)
 
-        # eval_bpp, mse, psnr, msssim, num_pixels = inference(x,
-        #         analysis_transform, entropy_bottleneck, synthesis_transform)
-        # inference_op = tf.group(eval_bpp, mse, psnr, msssim, num_pixels)
         if args.val_gap != 0:
-            def comp_psnr(img, img_hat):
+            def comp_psnr(img_hat, img):
+                # img = tf.squeeze(img)
+                # img_hat = tf.squeeze(img_hat[-1])
+                if args.command == "inv_train" and args.guidance_type != "baseline_pretrain":
+                    img_hat = img_hat[-1]
                 rgb_psnr = tf.squeeze(tf.reduce_mean(tf.image.psnr(img_hat, img, 255)))
                 luma_img = tf.slice(tf.image.rgb_to_yuv(img), [0, 0, 0, 0], [-1, -1, -1, 1])
                 luma_img_hat = tf.slice(tf.image.rgb_to_yuv(img_hat), [0, 0, 0, 0], [-1, -1, -1, 1])
@@ -491,11 +500,12 @@ def train(args):
                 tf.summary.scalar("validation-yhat-luma-psnr", val_luma_psnr)
                 tf.summary.scalar("validation-y-rgb-psnr", val_reuse_y_rgb_psnr)
                 tf.summary.scalar("validation-y-luma-psnr", val_reuse_y_luma_psnr)
-                # tf.summary.scalar("validation-bpp", val_bpp)
+                tf.summary.scalar("validation-bpp", val_bpp)
                 # group operations
                 val_op_lst = [val_rgb_psnr, val_luma_psnr, 
                          val_reuse_y_rgb_psnr, val_reuse_y_luma_psnr]
                         #  val_bpp]
+                val_bpp_op_list = [val_bpp]
             else:
                 # y^, z^
                 val_y_hat_z_hat_rgb_psnr, val_y_hat_z_hat_luma_psnr = comp_psnr(x_val_y_hat_z_hat, x_val)
@@ -514,13 +524,14 @@ def train(args):
                 tf.summary.scalar("validation-y-zhat-luma-psnr", val_y_z_hat_luma_psnr)
                 tf.summary.scalar("validation-y-z0-rgb-psnr", val_y_z_0_rgb_psnr)
                 tf.summary.scalar("validation-y-z0-luma-psnr", val_y_z_0_luma_psnr)
-                # tf.summary.scalar("validation-bpp", val_bpp)
+                tf.summary.scalar("validation-bpp", val_bpp)
                 # group operations
                 val_op_lst = [val_y_hat_z_hat_rgb_psnr, val_y_hat_z_hat_luma_psnr, 
                           val_y_hat_z_0_rgb_psnr, val_y_hat_z_0_luma_psnr, 
                           val_y_z_hat_rgb_psnr, val_y_z_hat_luma_psnr, 
                           val_y_z_0_rgb_psnr, val_y_z_0_luma_psnr]
                         #   val_bpp]
+                val_bpp_op_list = [val_bpp]
                 if args.no_aux and args.guidance_type == "baseline":
                     # y base^, z^
                     val_y_base_hat_z_hat_rgb_psnr, val_y_base_hat_z_hat_luma_psnr = comp_psnr(x_val_y_base_hat_z_hat, x_val)
@@ -531,12 +542,14 @@ def train(args):
                     tf.summary.scalar("validation-ybasehat-zhat-luma-psnr", val_y_base_hat_z_hat_luma_psnr)
                     tf.summary.scalar("validation-ybasehat-z0-rgb-psnr", val_y_base_hat_z_0_rgb_psnr)
                     tf.summary.scalar("validation-ybasehat-z0-luma-psnr", val_y_base_hat_z_0_luma_psnr)
-                    # tf.summary.scalar("validation-base-bpp", val_base_bpp)
+                    tf.summary.scalar("validation-base-bpp", val_base_bpp)
                     # group operations
                     val_op_lst += [val_y_base_hat_z_hat_rgb_psnr, val_y_base_hat_z_hat_luma_psnr, 
                                val_y_base_hat_z_0_rgb_psnr, val_y_base_hat_z_0_luma_psnr]
                             #    val_base_bpp]
+                    val_bpp_op_list.append(val_base_bpp)
             val_op = tf.group(*val_op_lst)
+            val_bpp_op = tf.group(*val_bpp_op_list)
 
         tf.summary.scalar("loss", train_loss)
         tf.summary.scalar("bpp", train_bpp)
@@ -591,6 +604,7 @@ def train(args):
                     if args.val_gap != 0 and global_iters % args.val_gap == 0:
                         # for i in range(24)
                         sess.run(val_op)
+                        sess.run(val_bpp_op)
             else:
                 if args.finetune:
                     if args.guidance_type == "baseline_pretrain":
@@ -615,6 +629,7 @@ def train(args):
                     sess.run(train_op)
                     if args.val_gap != 0 and global_iters % args.val_gap == 0:
                         sess.run(val_op)
+                        sess.run(val_bpp_op)
                     if global_iters % 5000 == 0:
                         if args.guidance_type == "baseline_pretrain":
                             # save analysis, synthesis and entropybottleneck model
