@@ -84,20 +84,20 @@ class SynthesisTransform(keras.layers.Layer):
 
 
 class SeqBlock(keras.layers.Layer):
-    def __init__(self, num_filters, channel_out, kernel_size, residual, nin, gdn=False, *args, **kwargs):
+    def __init__(self, num_filters, channel_out, kernel_size, residual, nin, norm="bn", *args, **kwargs):
         super(SeqBlock, self).__init__(*args, **kwargs)
         self.residual = residual
         self.nin = nin
-        self.gdn = gdn
+        self.norm = norm
         self.conv1 = keras.layers.Conv2D(filters=num_filters, kernel_size=(kernel_size, kernel_size),
             padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
-        if not gdn:
+        if norm == 'bn':
             self.bn1 = keras.layers.BatchNormalization()
             if self.nin:
                 self.bn2 = keras.layers.BatchNormalization()
             self.bn3 = keras.layers.BatchNormalization()
             self.lrelu = keras.layers.LeakyReLU(0.2)
-        else:
+        elif norm == 'gdn':
             self.gdn1 = tfc.GDN(name="gdn_1")
             if self.nin:
                 self.gdn2 = tfc.GDN(name="gdn_2")
@@ -113,16 +113,21 @@ class SeqBlock(keras.layers.Layer):
                 padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
 
     def call(self, x):
-        if not self.gdn:
+        if self.norm == 'bn':
             out = self.lrelu(self.bn1(self.conv1(x)))
             if self.nin:
                 out = self.lrelu(self.bn2(self.conv2(out)))
             out = self.bn3(self.conv3(out))
-        else:
+        elif self.norm == 'gdn':
             out = self.gdn1(self.conv1(x))
             if self.nin:
                 out = self.gdn2(self.conv2(out))
             out = self.gdn3(self.conv3(out))
+        else:
+            out = self.conv1(x)
+            if self.nin:
+                out = self.conv2(out)
+            out = self.conv3(out)
         if self.residual:
             out = self.conv_skip_connection(x) + out
         return out
@@ -156,7 +161,7 @@ class DenseBlock(keras.layers.Layer):
 
 class InvBlockExp(keras.layers.Layer):
     def __init__(self, channel_num, channel_split_num, blk_type='dense', num_filters=128, 
-                clamp=1., kernel_size=3, residual=False, nin=True, gdn=False, n_ops=3):
+                clamp=1., kernel_size=3, residual=False, nin=True, norm='bn', n_ops=3):
         super(InvBlockExp, self).__init__()
 
         self.split_len1 = channel_split_num
@@ -176,11 +181,11 @@ class InvBlockExp(keras.layers.Layer):
             if n_ops == 4:
                 self.I = DenseBlock(self.split_len1)
         else:
-            self.F = SeqBlock(num_filters, self.split_len1, kernel_size, residual=residual, nin=nin, gdn=gdn)
-            self.G = SeqBlock(num_filters, self.split_len2, kernel_size, residual=residual, nin=nin, gdn=gdn)
-            self.H = SeqBlock(num_filters, self.split_len2, kernel_size, residual=residual, nin=nin, gdn=gdn)
+            self.F = SeqBlock(num_filters, self.split_len1, kernel_size, residual=residual, nin=nin, norm=norm)
+            self.G = SeqBlock(num_filters, self.split_len2, kernel_size, residual=residual, nin=nin, norm=norm)
+            self.H = SeqBlock(num_filters, self.split_len2, kernel_size, residual=residual, nin=nin, norm=norm)
             if n_ops == 4:
-                self.I = SeqBlock(num_filters, self.split_len1, kernel_size, residual=residual, nin=nin, gdn=gdn)
+                self.I = SeqBlock(num_filters, self.split_len1, kernel_size, residual=residual, nin=nin, norm=norm)
 
     def call(self, x, rev=False):
         # x1, x2 = (x.narrow(1, 0, self.split_len1), x.narrow(1, self.split_len1, self.split_len2))
@@ -314,7 +319,7 @@ class InvConv(keras.layers.Layer):
 
 class InvCompressionNet(keras.Model):
     def __init__(self, channel_in, channel_out, blk_type, num_filters, \
-                kernel_size, residual, nin, gdn, n_ops, downsample_type, inv_conv):
+                kernel_size, residual, nin, norm, n_ops, downsample_type, inv_conv):
         super(InvCompressionNet, self).__init__()
         assert downsample_type == "haar" or downsample_type == "squeeze"
         # self.upscale_log = upscale_log
@@ -347,7 +352,7 @@ class InvCompressionNet(keras.Model):
             self.operations.append(InvConv(current_channel))
         self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
                         blk_type, num_filters=compute_n_filters(current_channel), 
-                        kernel_size=kernel_size, residual=residual, nin=nin, gdn=gdn, n_ops=n_ops))
+                        kernel_size=kernel_size, residual=residual, nin=nin, norm=norm, n_ops=n_ops))
 
         if downsample_type == "haar":
             self.operations.append(HaarDownsampling(current_channel))
@@ -358,7 +363,7 @@ class InvCompressionNet(keras.Model):
             self.operations.append(InvConv(current_channel))
         self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
                         blk_type, num_filters=compute_n_filters(current_channel), 
-                        kernel_size=kernel_size, residual=residual, nin=nin, gdn=gdn, n_ops=n_ops))
+                        kernel_size=kernel_size, residual=residual, nin=nin, norm=norm, n_ops=n_ops))
 
         if downsample_type == "haar":
             self.operations.append(HaarDownsampling(current_channel))
@@ -369,7 +374,7 @@ class InvCompressionNet(keras.Model):
             self.operations.append(InvConv(current_channel))
         self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
                         blk_type, num_filters=compute_n_filters(current_channel), 
-                        kernel_size=kernel_size, residual=residual, nin=nin, gdn=gdn, n_ops=n_ops))
+                        kernel_size=kernel_size, residual=residual, nin=nin, norm=norm, n_ops=n_ops))
         
     def call(self, x, rev=False):
         out = []
