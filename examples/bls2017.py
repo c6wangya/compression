@@ -303,9 +303,9 @@ def train(args):
                 string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
                 val_bpp = tf.math.divide(string_len * 8, val_num_pixels)
                 # y^
-                x_val_hat_reuse_y = synthesis_transform(y_val_hat)
+                x_val_hat = synthesis_transform(y_val_hat)
                 # y
-                x_val_hat = synthesis_transform(y_val)
+                x_val_hat_reuse_y = synthesis_transform(y_val)
         else:  # For InvCompressionNet
             if args.guidance_type == "baseline":
                 y_base = analysis_transform(x)
@@ -480,6 +480,9 @@ def train(args):
 
         if args.val_gap != 0:
             def comp_psnr(img_hat, img):
+                img *= 255
+                img_hat=tf.clip_by_value(img_hat, 0, 1)
+                img_hat=tf.round(img_hat * 255)
                 # img = tf.squeeze(img)
                 # img_hat = tf.squeeze(img_hat[-1])
                 if args.command == "inv_train" and args.guidance_type != "baseline_pretrain":
@@ -598,7 +601,7 @@ def train(args):
         with tf.train.MonitoredTrainingSession(
                     hooks=hooks, checkpoint_dir=args.checkpoint_dir,
                     save_checkpoint_secs=1000, save_summaries_secs=300) as sess:
-            if "baseline" not in args.guidance_type or args.finetune:
+            if "baseline" not in args.guidance_type:
                 while not sess.should_stop():
                     sess.run(train_op)
                     if args.val_gap != 0 and global_iters % args.val_gap == 0:
@@ -617,9 +620,11 @@ def train(args):
                                 args.pretrain_checkpoint_dir + "/entro_net")
                     elif args.guidance_type == "baseline":
                         # load invertible model
-                        restore_weights(inv_saver, get_session(sess), 
-                                args.pretrain_checkpoint_dir + "/inv_net")
-                if args.guidance_type == "baseline":
+                        # restore_weights(inv_saver, get_session(sess), 
+                        #         args.pretrain_checkpoint_dir + "/inv_net")
+                        latest = tf.train.latest_checkpoint(checkpoint_dir=args.checkpoint_dir)
+                        tf.train.Saver().restore(sess, save_path=latest)
+                if args.guidance_type == "baseline" and not args.finetune:
                     # load analysis and entropybottleneck model
                     restore_weights(analysis_saver, get_session(sess), 
                             args.pretrain_checkpoint_dir + "/ana_net")
