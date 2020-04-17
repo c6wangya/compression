@@ -197,14 +197,16 @@ def differentiable_round(x):
 
 def lr_schedule(step, mode, warmup_steps=10000, min_ratio=0.1, decay=0.999995):
     assert mode == 'constant' or mode == 'scheduled'
-    global curr_lr
-    if step < warmup_steps:
-        curr_lr = 1 * step / warmup_steps
-        return 1 * step / warmup_steps
-    elif step > warmup_steps:
-        curr_lr *= decay 
+    if mode == 'scheduled':
+        global curr_lr
+        if step < warmup_steps:
+            curr_lr = 1 * step / warmup_steps
+            return 1 * step / warmup_steps
+        elif step > warmup_steps:
+            curr_lr *= decay 
+            return curr_lr
         return curr_lr
-    return curr_lr
+    return 1
 
 
 def train(args):
