@@ -195,7 +195,7 @@ def differentiable_round(x):
     return tf.round(x), grad
 
 
-def lr_schedule(step, mode, warmup_steps=5000, min_ratio=0.1, decay=0.99995):
+def lr_schedule(step, mode, warmup_steps=10000, min_ratio=0.1, decay=0.999995):
     assert mode == 'constant' or mode == 'scheduled'
     global curr_lr
     if step < warmup_steps:
