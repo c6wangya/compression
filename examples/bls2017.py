@@ -195,6 +195,18 @@ def differentiable_round(x):
     return tf.round(x), grad
 
 
+def lr_schedule(step, mode, warmup_steps=5000, min_ratio=0.1, decay=0.99995):
+    assert mode == 'constant' or mode == 'scheduled'
+    global curr_lr
+    if step < warmup_steps:
+        curr_lr = 1 * step / warmup_steps
+        return 1 * step / warmup_steps
+    elif step > warmup_steps:
+        curr_lr *= decay 
+        return curr_lr
+    return curr_lr
+
+
 def train(args):
     """Trains the model."""
 
@@ -323,6 +335,8 @@ def train(args):
             # zshapes.append(z)
             # mle of flow 
             train_flow += tf.reduce_sum(tf.norm(z + epsilon, ord=2, axis=-1, name="last_norm"))
+            if args.train_jacobian:
+                train_flow /= -np.log(2) * num_pixels
             
             y = tf.slice(out[-1], [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
             if args.guidance_type == "norm": 
@@ -402,7 +416,7 @@ def train(args):
         if args.guidance_type == "grayscale":
             y_guidance = guidance_transform(x)
         # Total number of bits divided by number of pixels.
-        train_bpp=tf.reduce_sum(tf.log(likelihoods)) / (-np.log(2) * num_pixels)
+        train_bpp = tf.reduce_sum(tf.log(likelihoods)) / (-np.log(2) * num_pixels)
 
         # Mean squared error across pixels.
         train_mse=tf.reduce_mean(tf.squared_difference(x, x_tilde))
@@ -457,8 +471,10 @@ def train(args):
             print("Has variables {} in total, and filtered out {} variables\n".format( \
                     len(tvars), len(tvars) - len(filtered_vars)))
         # Minimize loss and auxiliary loss, and execute update op.
+        main_lr = tf.placeholder(tf.float32, [], 'main_lr')
+        aux_lr = tf.placeholder(tf.float32, [], 'aux_lr')
         step = tf.train.create_global_step()
-        main_optimizer=tf.train.AdamOptimizer(learning_rate=args.main_lr)
+        main_optimizer=tf.train.AdamOptimizer(learning_rate=main_lr)
         main_gradients, main_variables = zip(*main_optimizer.compute_gradients(train_loss, filtered_vars))
         main_gradients = [
             None if gradient is None else tf.clip_by_norm(gradient, args.grad_clipping)
@@ -466,7 +482,7 @@ def train(args):
         main_step = main_optimizer.apply_gradients(zip(main_gradients, main_variables), global_step=step)
         
         if not args.freeze_aux:
-            aux_optimizer=tf.train.AdamOptimizer(learning_rate=args.aux_lr)
+            aux_optimizer=tf.train.AdamOptimizer(learning_rate=aux_lr)
             aux_gradients, aux_variables = zip(*aux_optimizer.compute_gradients( \
                     entropy_bottleneck.losses[0], filtered_vars))
             aux_gradients = [
@@ -554,6 +570,8 @@ def train(args):
             val_op = tf.group(*val_op_lst)
             val_bpp_op = tf.group(*val_bpp_op_list)
 
+        tf.summary.scalar("main-learning-rates", main_lr)
+
         tf.summary.scalar("loss", train_loss)
         tf.summary.scalar("bpp", train_bpp)
         tf.summary.scalar("mse", train_mse)
@@ -601,13 +619,15 @@ def train(args):
         with tf.train.MonitoredTrainingSession(
                     hooks=hooks, checkpoint_dir=args.checkpoint_dir,
                     save_checkpoint_secs=1000, save_summaries_secs=300) as sess:
-            if "baseline" not in args.guidance_type:
+            if "baseline" not in args.guidance_type or args.finetune:
                 while not sess.should_stop():
-                    sess.run(train_op)
+                    lr = lr_schedule(global_iters, args.lr_scheduler)
+                    sess.run(train_op, {main_lr: args.main_lr * lr, aux_lr: args.aux_lr * lr})
                     if args.val_gap != 0 and global_iters % args.val_gap == 0:
                         # for i in range(24)
                         sess.run(val_op)
                         sess.run(val_bpp_op)
+                    global_iters += 1
             else:
                 if args.finetune:
                     if args.guidance_type == "baseline_pretrain":
@@ -620,18 +640,17 @@ def train(args):
                                 args.pretrain_checkpoint_dir + "/entro_net")
                     elif args.guidance_type == "baseline":
                         # load invertible model
-                        # restore_weights(inv_saver, get_session(sess), 
-                        #         args.pretrain_checkpoint_dir + "/inv_net")
-                        latest = tf.train.latest_checkpoint(checkpoint_dir=args.checkpoint_dir)
-                        tf.train.Saver().restore(sess, save_path=latest)
-                if args.guidance_type == "baseline" and not args.finetune:
+                        restore_weights(inv_saver, get_session(sess), 
+                                args.pretrain_checkpoint_dir + "/inv_net")
+                if args.guidance_type == "baseline":
                     # load analysis and entropybottleneck model
                     restore_weights(analysis_saver, get_session(sess), 
                             args.pretrain_checkpoint_dir + "/ana_net")
                     restore_weights(entropy_saver, get_session(sess), 
                             args.pretrain_checkpoint_dir + "/entro_net")
                 while not sess.should_stop():
-                    sess.run(train_op)
+                    lr = lr_schedule(global_iters, args.lr_scheduler)
+                    sess.run(train_op, {main_lr: args.main_lr * lr, aux_lr: args.aux_lr * lr})
                     if args.val_gap != 0 and global_iters % args.val_gap == 0:
                         sess.run(val_op)
                         sess.run(val_bpp_op)
@@ -1142,6 +1161,9 @@ def parse_args(argv):
                 "--val_glob", default="images/*.png",
                 help="Glob pattern identifying validation data. This pattern must expand "
                 "to a list of RGB images in PNG format.")
+        cmd.add_argument(
+                "--lr_scheduler", default="constant",
+                help="lr scheduler mode, can be either constant or scheduled.")
 
     # 'compress' subcommand.
     compress_cmd=subparsers.add_parser(
