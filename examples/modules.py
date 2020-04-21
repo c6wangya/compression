@@ -612,3 +612,39 @@ class SqueezeDownsampling(keras.layers.Layer):
     def jacobian(self, x, rev=False):
         return 0
 
+
+class Dequantizer(keras.layers.Layer):
+    """
+    dequantizer layer
+    """
+    def __init__(self, factor=2):
+        super(Dequantizer, self).__init__()
+        assert factor >= 1
+        self.factor = factor
+    
+    def call(self, x, rev=False):
+        if self.factor == 1:
+            return x
+        shape = x.get_shape()
+        height = int(shape[1])
+        width = int(shape[2])
+        n_channels = int(shape[3])
+
+        if not rev:
+            assert height % self.factor == 0 and width % self.factor == 0
+            x = tf.reshape(x, [-1, height//self.factor, self.factor,
+                            width//self.factor, self.factor, n_channels])
+            x = tf.transpose(x, [0, 1, 3, 5, 2, 4])
+            out = tf.reshape(x, [-1, height//self.factor, width //
+                            self.factor, n_channels*self.factor*self.factor])
+        else:
+            assert n_channels >= 4 and n_channels % 4 == 0
+            x = tf.reshape(
+                x, (-1, height, width, int(n_channels/self.factor**2), self.factor, self.factor))
+            x = tf.transpose(x, [0, 1, 4, 2, 5, 3])
+            out = tf.reshape(x, (-1, int(height*self.factor),
+                            int(width*self.factor), int(n_channels/self.factor**2)))
+        return out
+
+    def jacobian(self, x, rev=False):
+        return 0

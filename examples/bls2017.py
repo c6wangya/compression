@@ -291,6 +291,9 @@ def train(args):
             elif args.guidance_type == "baseline":
                 analysis_transform = m.AnalysisTransform(args.channel_out[0])
 
+            if args.dequant:
+
+
         if args.guidance_type == "grayscale":
             guidance_transform = m.GrayScaleGuidance(rgb_type='RGB', down_scale=4)
     
