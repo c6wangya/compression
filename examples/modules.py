@@ -611,3 +611,4 @@ class SqueezeDownsampling(keras.layers.Layer):
 
     def jacobian(self, x, rev=False):
         return 0
+

@@ -45,6 +45,7 @@ import tensorflow.compat.v1 as tf
 
 import tensorflow_compression as tfc
 import modules as m
+import flowpp as fpp
 
 from tensorflow.python import debug as tf_debug
 
