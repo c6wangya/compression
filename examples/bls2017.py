@@ -192,7 +192,7 @@ def save_weights(saver, sess, ckpt_dir, iters):
 def differentiable_round(x):
     """ customized differentiable round operation"""
     def grad(dy):
-        return tf.ones_like(dy)
+        return dy
     return tf.round(x), grad
 
 
