@@ -658,7 +658,11 @@ def train(args):
                     restore_weights(entropy_saver, get_session(sess), 
                             args.pretrain_checkpoint_dir + "/entro_net")
                 while not sess.should_stop():
-                    lr = lr_schedule(global_iters, args.lr_scheduler)
+                    lr = lr_schedule(global_iters, 
+                                     args.lr_scheduler, 
+                                     args.lr_warmup_steps, 
+                                     args.lr_min_ratio, 
+                                     args.lr_decay)
                     sess.run(train_op, {main_lr: args.main_lr * lr, aux_lr: args.aux_lr * lr})
                     if args.val_gap != 0 and global_iters % args.val_gap == 0:
                         sess.run(val_op)
