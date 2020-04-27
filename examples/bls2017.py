@@ -291,9 +291,6 @@ def train(args):
             elif args.guidance_type == "baseline":
                 analysis_transform = m.AnalysisTransform(args.channel_out[0])
 
-            if args.dequant:
-
-
         if args.guidance_type == "grayscale":
             guidance_transform = m.GrayScaleGuidance(rgb_type='RGB', down_scale=4)
     
@@ -353,7 +350,6 @@ def train(args):
             if args.no_aux and args.guidance_type == "baseline":
                 y_tilde, likelihoods = entropy_bottleneck(tf.stop_gradient(y_base), training=True)
             elif args.no_aux:
-                y_tilde = differentiable_round(y)
                 # to compute bpp
                 _, likelihoods = entropy_bottleneck(tf.stop_gradient(y), training=True)
             else:
@@ -365,6 +361,9 @@ def train(args):
                     input_rev.append(tf.zeros(shape=zshape))
                 else:
                     input_rev.append(tf.random_normal(shape=zshape))
+            
+            if args.ste:
+                y_tilde = differentiable_round(y)
             input_rev.append(y_tilde)
             x_tilde, _ = inv_transform(input_rev, rev=True)
             x_tilde = x_tilde[-1]
@@ -1170,6 +1169,9 @@ def parse_args(argv):
         cmd.add_argument(
                 "--lr_scheduler", default="constant",
                 help="lr scheduler mode, can be either constant or scheduled.")
+        cmd.add_argument(
+                "--ste", action="store_true",
+                help="whether to use ste for recons.")
 
     # 'compress' subcommand.
     compress_cmd=subparsers.add_parser(
