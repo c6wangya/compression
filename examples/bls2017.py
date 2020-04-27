@@ -626,7 +626,11 @@ def train(args):
                     save_checkpoint_secs=1000, save_summaries_secs=300) as sess:
             if "baseline" not in args.guidance_type or args.finetune:
                 while not sess.should_stop():
-                    lr = lr_schedule(global_iters, args.lr_scheduler)
+                    lr = lr_schedule(global_iters, 
+                                     args.lr_scheduler, 
+                                     args.lr_warmup_steps, 
+                                     args.lr_min_ratio, 
+                                     args.lr_decay)
                     sess.run(train_op, {main_lr: args.main_lr * lr, aux_lr: args.aux_lr * lr})
                     if args.val_gap != 0 and global_iters % args.val_gap == 0:
                         # for i in range(24)
@@ -1169,6 +1173,15 @@ def parse_args(argv):
         cmd.add_argument(
                 "--lr_scheduler", default="constant",
                 help="lr scheduler mode, can be either constant or scheduled.")
+        cmd.add_argument(
+                "--lr_warmup_steps", type=int, default=10000,
+                help="warm-up steps")
+        cmd.add_argument(
+                "--lr_min_ratio", type=float, default=0.1,
+                help="minimam ratio of lr")
+        cmd.add_argument(
+                "--lr_decay", type=float, default=0.999995,
+                help="decay ratio of lr")
         cmd.add_argument(
                 "--ste", action="store_true",
                 help="whether to use ste for recons.")
