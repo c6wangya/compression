@@ -110,11 +110,12 @@ class SeqBlock(keras.layers.Layer):
                 self.gdn2 = tfc.GDN(name="gdn_2")
             self.gdn3 = tfc.GDN(name="gdn_3")
         elif norm == 'an':
-            compute_ch_in = lambda ch_in: [int(ch_in / an_ratio), int(ch_in - ch_in / an_ratio)]
+            compute_ch_in = lambda ch_in: (int(ch_in / an_ratio), int(ch_in - ch_in / an_ratio))
             self.norm1 = ActNorm(channel_in=compute_ch_in(num_filters))
             if self.nin:
                 self.norm2 = ActNorm(channel_in=compute_ch_in(num_filters))
             self.norm3 = ActNorm(channel_in=compute_ch_in(channel_out))
+            self.lrelu = keras.layers.LeakyReLU(0.2)
 
         if self.nin:
             self.conv2 = keras.layers.Conv2D(filters=num_filters, kernel_size=(kernel_size, kernel_size),
@@ -653,14 +654,15 @@ class ActNorm(keras.layers.Layer):
         self.init_scale = init_scale
         self.logss = []
         self.bs = []
+        print("[actnorm] channel: {}".format(channel_in))
         for (i, ch) in enumerate(channel_in):
             if ch != 0:
                 self.logss.append(self.add_weight(name='logs_{}'.format(i), 
-                                            shape=(ch),
+                                            shape=(ch, ),
                                             initializer=tf.constant_initializer(1),
                                             trainable=True))
                 self.bs.append(self.add_weight(name='b_{}'.format(i), 
-                                            shape=(ch), 
+                                            shape=(ch, ), 
                                             initializer=tf.constant_initializer(0), 
                                             trainable=True))
                 # exponential moving average
@@ -676,6 +678,7 @@ class ActNorm(keras.layers.Layer):
         else:
             xs = x
         for (i, x) in enumerate(xs):
+            if self.channel_in[i] != 0:
             if init:
                 assert not rev 
                 m_init, v_init = tf.nn.moments(x, [0, 1, 2])
@@ -685,7 +688,7 @@ class ActNorm(keras.layers.Layer):
                     self.logss[i].assign(tf.log(1/(tf.sqrt(v_init)+1e-6))/3. * scale_init), 
                     self.bs[i].assign(-m_init * scale_init)
                 ]):
-                    x = tf.identity(x)
+                    self.logss[i], self.bs[i] = tf.identity_n([self.logss[i], self.bs[i]])
 
             b = tf.reshape(self.bs[i], [1, 1, 1, self.channel_in[i]])
             logs = tf.reshape(self.logss[i], [1, 1, 1, self.channel_in[i]]) * 3.
