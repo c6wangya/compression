@@ -284,7 +284,8 @@ def train(args):
                     blk_type=args.blk_type, num_filters=args.num_filters,
                     kernel_size=args.kernel_size, residual=args.residual, 
                     nin=args.nin, norm=args.norm, n_ops=args.n_ops, 
-                    downsample_type=args.downsample_type, inv_conv=(not args.non1x1))
+                    downsample_type=args.downsample_type, inv_conv=(not args.non1x1), 
+                    use_norm=args.use_norm)
             if args.guidance_type == "baseline_pretrain":
                 analysis_transform = m.AnalysisTransform(args.channel_out[0])
                 synthesis_transform = m.SynthesisTransform(args.channel_out[0])
@@ -324,8 +325,10 @@ def train(args):
         else:  # For InvCompressionNet
             if args.guidance_type == "baseline":
                 y_base = analysis_transform(x)
+            # place holder for init bool
+            init = tf.placeholder(tf.bool, (), 'init')
             # x = print_act_stats(x, "x")
-            out, train_jac = inv_transform([x])
+            out, train_jac = inv_transform([x], init=init)
             zshapes = []
             
             if out[-1].get_shape()[-1] == args.channel_out[-1]:
@@ -631,7 +634,9 @@ def train(args):
                                      args.lr_warmup_steps, 
                                      args.lr_min_ratio, 
                                      args.lr_decay)
-                    sess.run(train_op, {main_lr: args.main_lr * lr, aux_lr: args.aux_lr * lr})
+                    sess.run(train_op, {main_lr: args.main_lr * lr, 
+                                        aux_lr: args.aux_lr * lr, 
+                                        init: global_iters == 0})
                     if args.val_gap != 0 and global_iters % args.val_gap == 0:
                         # for i in range(24)
                         sess.run(val_op)
@@ -663,7 +668,9 @@ def train(args):
                                      args.lr_warmup_steps, 
                                      args.lr_min_ratio, 
                                      args.lr_decay)
-                    sess.run(train_op, {main_lr: args.main_lr * lr, aux_lr: args.aux_lr * lr})
+                    sess.run(train_op, {main_lr: args.main_lr * lr, 
+                                        aux_lr: args.aux_lr * lr, 
+                                        init: global_iters == 0})
                     if args.val_gap != 0 and global_iters % args.val_gap == 0:
                         sess.run(val_op)
                         sess.run(val_bpp_op)
@@ -1189,6 +1196,9 @@ def parse_args(argv):
         cmd.add_argument(
                 "--ste", action="store_true",
                 help="whether to use ste for recons.")
+        cmd.add_argument(
+                "--use_norm", action="store_true",
+                help="whether to use norm after 1x1 conv.")
 
     # 'compress' subcommand.
     compress_cmd=subparsers.add_parser(
