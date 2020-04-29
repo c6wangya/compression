@@ -718,5 +718,5 @@ class MultiActNorm(keras.layers.Layer):
         x2 = x[..., ch // self.split_ratio:]
 
         x1 = self.actnorm_1(x1, rev=rev)
-        x2 = self.actnorm_1(x2, rev=rev)
+        x2 = self.actnorm_2(x2, rev=rev)
         return tf.concat([x1, x2], -1)
