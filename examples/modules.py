@@ -654,7 +654,6 @@ class ActNorm(keras.layers.Layer):
         self.init_scale = init_scale
         self.logss = []
         self.bs = []
-        print("[actnorm] channel: {}".format(channel_in))
         for (i, ch) in enumerate(channel_in):
             if ch != 0:
                 self.logss.append(self.add_weight(name='logs_{}'.format(i), 
@@ -671,24 +670,22 @@ class ActNorm(keras.layers.Layer):
 
     def call(self, x, rev=False, init=False):
         out = []
-        if not isinstance(x, tuple) and self.channel_in[1] == 0:
+        if not isinstance(x, tuple) and self.channel_in[1] != 0:
             xs = (x[..., :self.channel_in[0]], x[..., self.channel_in[0]:])
         elif not isinstance(x, tuple):
             xs = (x, )
         else:
             xs = x
         for (i, x) in enumerate(xs):
-            if self.channel_in[i] != 0:
             if init:
+                # print("the {} th logss[i] in shape: {}, bs[i] in shape: {}".format(i, self.logss[i].get_shape().as_list(), self.bs[i].get_shape().as_list()))
                 assert not rev 
                 m_init, v_init = tf.nn.moments(x, [0, 1, 2])
                 scale_init = self.init_scale * tf.rsqrt(v_init + 1e-8)
-                
-                with tf.control_dependencies([
-                    self.logss[i].assign(tf.log(1/(tf.sqrt(v_init)+1e-6))/3. * scale_init), 
-                    self.bs[i].assign(-m_init * scale_init)
-                ]):
-                    self.logss[i], self.bs[i] = tf.identity_n([self.logss[i], self.bs[i]])
+                self.logss[i] = self.logss[i].assign(tf.log(1/(tf.sqrt(v_init)+1e-6))/3. * scale_init)
+                self.bs[i] = self.bs[i].assign(-m_init * scale_init)
+                # with tf.control_dependencies([self.logss[i], self.bs[i]]):
+                #     self.logss[i], self.bs[i] = tf.identity_n([self.logss[i], self.bs[i]])
 
             b = tf.reshape(self.bs[i], [1, 1, 1, self.channel_in[i]])
             logs = tf.reshape(self.logss[i], [1, 1, 1, self.channel_in[i]]) * 3.
@@ -701,3 +698,62 @@ class ActNorm(keras.layers.Layer):
         if not isinstance(x, tuple):
             return tf.concat(out, axis=-1)
         return out
+
+
+class ActNorm(tf.keras.layers.Layer):
+    """Actnorm, an affine reversible layer (Prafulla and Kingma, 2018).
+    Weights use data-dependent initialization in which outputs have zero mean
+    and unit variance per channel (last dimension). The mean/variance statistics
+    are computed from the first batch of inputs.
+    """
+
+    def __init__(self, epsilon=tf.keras.backend.epsilon(), **kwargs):
+        super(ActNorm, self).__init__(**kwargs)
+        self.epsilon = epsilon
+
+    def build(self, input_shape):
+        input_shape = tf.TensorShape(input_shape)
+    last_dim = input_shape[-1]
+    if last_dim is None:
+      raise ValueError('The last dimension of the inputs to `ActNorm` '
+                       'should be defined. Found `None`.')
+    bias = self.add_weight('bias', [last_dim], dtype=self.dtype)
+    log_scale = self.add_weight('log_scale', [last_dim], dtype=self.dtype)
+    # Set data-dependent initializers.
+    bias = bias.assign(self.bias_initial_value)
+    with tf.control_dependencies([bias]):
+      self.bias = bias
+    log_scale = log_scale.assign(self.log_scale_initial_value)
+    with tf.control_dependencies([log_scale]):
+      self.log_scale = log_scale
+    self.built = True
+
+  def __call__(self, inputs, *args, **kwargs):
+    if not self.built:
+      mean, variance = tf.nn.moments(
+          inputs, axes=list(range(inputs.shape.ndims - 1)))
+      self.bias_initial_value = -mean
+      # TODO(trandustin): Optionally, actnorm multiplies log_scale by a fixed
+      # log_scale factor (e.g., 3.) and initializes by
+      # initial_value / log_scale_factor.
+      self.log_scale_initial_value = tf.math.log(
+          1. / (tf.sqrt(variance) + self.epsilon))
+
+    if not isinstance(inputs, random_variable.RandomVariable):
+      return super(ActNorm, self).__call__(inputs, *args, **kwargs)
+    return transformed_random_variable.TransformedRandomVariable(inputs, self)
+
+  def call(self, inputs):
+    return (inputs + self.bias) * tf.exp(self.log_scale)
+
+  def reverse(self, inputs):
+    return inputs * tf.exp(-self.log_scale) - self.bias
+
+  def log_det_jacobian(self, inputs):
+    """Returns log det | dx / dy | = num_events * sum log | scale |."""
+    del inputs  # unused
+    # Number of events is number of all elements excluding the batch and
+    # channel dimensions.
+    num_events = tf.reduce_prod(tf.shape(inputs)[1:-1])
+    log_det_jacobian = num_events * tf.reduce_sum(self.log_scale)
+    return log_det_jacobian
