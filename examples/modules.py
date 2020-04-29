@@ -371,8 +371,7 @@ class InvCompressionNet(keras.Model):
         if inv_conv:
             self.operations.append(InvConv(current_channel))
             if use_norm:
-                self.operations.append(MultiActNorm(channel_in=(int(current_channel / 3), 
-                                                           int(2 * current_channel / 3))))
+                self.operations.append(MultiActNorm(split_ratio=3))
         self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
                         blk_type, num_filters=compute_n_filters(current_channel), 
                         kernel_size=kernel_size, residual=residual, nin=nin, norm=norm, n_ops=n_ops))
@@ -385,8 +384,7 @@ class InvCompressionNet(keras.Model):
         if inv_conv:
             self.operations.append(InvConv(current_channel))
             if use_norm:
-                self.operations.append(MultiActNorm(channel_in=(int(current_channel / 3), 
-                                                           int(2 * current_channel / 3))))
+                self.operations.append(MultiActNorm(split_ratio=3))
         self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
                         blk_type, num_filters=compute_n_filters(current_channel), 
                         kernel_size=kernel_size, residual=residual, nin=nin, norm=norm, n_ops=n_ops))
@@ -399,8 +397,7 @@ class InvCompressionNet(keras.Model):
         if inv_conv:
             self.operations.append(InvConv(current_channel))
             if use_norm:
-                self.operations.append(MultiActNorm(channel_in=(int(current_channel / 3), 
-                                                           int(2 * current_channel / 3))))
+                self.operations.append(MultiActNorm(split_ratio=3))
         self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
                         blk_type, num_filters=compute_n_filters(current_channel), 
                         kernel_size=kernel_size, residual=residual, nin=nin, norm=norm, n_ops=n_ops))
@@ -411,11 +408,7 @@ class InvCompressionNet(keras.Model):
         if not rev:
             xx = x[-1]
             for i in range(len(self.operations)):
-                if isinstance(self.operations[i], InvBlockExp) or \
-                   isinstance(self.operations[i], ActNorm):
-                    xx = self.operations[i](xx, rev)
-                else:
-                    xx = self.operations[i](xx, rev)
+                xx = self.operations[i](xx, rev)
                 jacobian += self.operations[i].jacobian(xx, rev)
             # assert xx.get_shape()[-1] == 768 and xx.get_shape()[-2] == 16, \
                 # "x shape is {}\n".format(xx.get_shape())
@@ -646,59 +639,6 @@ class SqueezeDownsampling(keras.layers.Layer):
         return 0
 
 
-class MultiActNorm(keras.layers.Layer):
-    def __init__(self, channel_in, init_scale=1., ema=None):
-        super(MultiActNorm, self).__init__()
-        assert isinstance(channel_in, tuple)
-        self.channel_in = channel_in
-        self.init_scale = init_scale
-        self.logss = []
-        self.bs = []
-        for (i, ch) in enumerate(channel_in):
-            if ch != 0:
-                self.logss.append(self.add_weight(name='logs_{}'.format(i), 
-                                            shape=(ch, ),
-                                            initializer=tf.constant_initializer(1),
-                                            trainable=True))
-                self.bs.append(self.add_weight(name='b_{}'.format(i), 
-                                            shape=(ch, ), 
-                                            initializer=tf.constant_initializer(0), 
-                                            trainable=True))
-                # exponential moving average
-                if ema is not None:
-                    self.logss[i], self.bs[i] = ema_var([self.logss[i], self.bs[i]], ema)
-
-    def call(self, x, rev=False):
-        out = []
-        if not isinstance(x, tuple) and self.channel_in[1] != 0:
-            xs = (x[..., :self.channel_in[0]], x[..., self.channel_in[0]:])
-        elif not isinstance(x, tuple):
-            xs = (x, )
-        else:
-            xs = x
-        for (i, x) in enumerate(xs):
-            # print("the {} th logss[i] in shape: {}, bs[i] in shape: {}".format(i, self.logss[i].get_shape().as_list(), self.bs[i].get_shape().as_list()))
-            assert not rev 
-            m_init, v_init = tf.nn.moments(x, [0, 1, 2])
-            scale_init = self.init_scale * tf.rsqrt(v_init + 1e-8)
-            self.logss[i] = self.logss[i].assign(tf.log(1/(tf.sqrt(v_init)+1e-6))/3. * scale_init)
-            self.bs[i] = self.bs[i].assign(-m_init * scale_init)
-            # with tf.control_dependencies([self.logss[i], self.bs[i]]):
-            #     self.logss[i], self.bs[i] = tf.identity_n([self.logss[i], self.bs[i]])
-
-            b = tf.reshape(self.bs[i], [1, 1, 1, self.channel_in[i]])
-            logs = tf.reshape(self.logss[i], [1, 1, 1, self.channel_in[i]]) * 3.
-            if not rev:
-                x = (x + b) * tf.exp(logs)
-            else:
-                x = x * tf.exp(-logs) - b
-            out.append(x)
-
-        if not isinstance(x, tuple):
-            return tf.concat(out, axis=-1)
-        return out
-
-
 class ActNorm(tf.keras.layers.Layer):
     """Actnorm, an affine reversible layer (Prafulla and Kingma, 2018).
     Weights use data-dependent initialization in which outputs have zero mean
@@ -762,3 +702,21 @@ class ActNorm(tf.keras.layers.Layer):
         num_events = tf.reduce_prod(tf.shape(inputs)[1:-1])
         log_det_jacobian = num_events * tf.reduce_sum(self.log_scale)
         return log_det_jacobian
+
+
+class MultiActNorm(keras.layers.Layer):
+    def __init__(self, split_ratio):
+        super(MultiActNorm, self).__init__()
+        self.actnorm_1 = ActNorm()
+        self.actnorm_2 = ActNorm()
+        assert split_ratio >= 1
+        self.split_ratio = split_ratio
+    
+    def call(self, x, rev=False):
+        ch = x.get_shape().as_list()[-1]
+        x1 = x[..., :ch // self.split_ratio]
+        x2 = x[..., ch // self.split_ratio:]
+
+        x1 = self.actnorm_1(x1, rev=rev)
+        x2 = self.actnorm_1(x2, rev=rev)
+        return tf.concat([x1, x2], -1)
