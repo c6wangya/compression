@@ -325,10 +325,10 @@ def train(args):
         else:  # For InvCompressionNet
             if args.guidance_type == "baseline":
                 y_base = analysis_transform(x)
-            # place holder for init bool
-            init = tf.placeholder(tf.bool, (), 'init')
+            # # place holder for init bool
+            # init = tf.placeholder(tf.bool, (), 'init')
             # x = print_act_stats(x, "x")
-            out, train_jac = inv_transform([x], init=init)
+            out, train_jac = inv_transform([x])
             zshapes = []
             
             if out[-1].get_shape()[-1] == args.channel_out[-1]:
@@ -635,8 +635,7 @@ def train(args):
                                      args.lr_min_ratio, 
                                      args.lr_decay)
                     sess.run(train_op, {main_lr: args.main_lr * lr, 
-                                        aux_lr: args.aux_lr * lr, 
-                                        init: bool(global_iters == 0)})
+                                        aux_lr: args.aux_lr * lr})
                     if args.val_gap != 0 and global_iters % args.val_gap == 0:
                         # for i in range(24)
                         sess.run(val_op)
@@ -669,8 +668,7 @@ def train(args):
                                      args.lr_min_ratio, 
                                      args.lr_decay)
                     sess.run(train_op, {main_lr: args.main_lr * lr, 
-                                        aux_lr: args.aux_lr * lr, 
-                                        init: bool(global_iters == 0)})
+                                        aux_lr: args.aux_lr * lr})
                     if args.val_gap != 0 and global_iters % args.val_gap == 0:
                         sess.run(val_op)
                         sess.run(val_bpp_op)
