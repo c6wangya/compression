@@ -110,11 +110,11 @@ class SeqBlock(keras.layers.Layer):
                 self.gdn2 = tfc.GDN(name="gdn_2")
             self.gdn3 = tfc.GDN(name="gdn_3")
         elif norm == 'an':
-            compute_ch_in = lambda ch_in: (int(ch_in / an_ratio), int(ch_in - ch_in / an_ratio))
-            self.norm1 = ActNorm(channel_in=compute_ch_in(num_filters))
+            # compute_ch_in = lambda ch_in: (int(ch_in / an_ratio), int(ch_in - ch_in / an_ratio))
+            self.norm1 = ActNorm()
             if self.nin:
-                self.norm2 = ActNorm(channel_in=compute_ch_in(num_filters))
-            self.norm3 = ActNorm(channel_in=compute_ch_in(channel_out))
+                self.norm2 = ActNorm()
+            self.norm3 = ActNorm()
             self.lrelu = keras.layers.LeakyReLU(0.2)
 
         if self.nin:
@@ -126,17 +126,17 @@ class SeqBlock(keras.layers.Layer):
             self.conv_skip_connection = keras.layers.Conv2D(filters=channel_out, kernel_size=(3, 3),
                 padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
 
-    def call(self, x, init=False):
+    def call(self, x):
         if self.norm == 'bn':
             out = self.lrelu(self.norm1(self.conv1(x)))
             if self.nin:
                 out = self.lrelu(self.norm2(self.conv2(out)))
             out = self.norm3(self.conv3(out))
         elif self.norm == 'an':
-            out = self.lrelu(self.norm1(self.conv1(x), init=init))
+            out = self.lrelu(self.norm1(self.conv1(x)))
             if self.nin:
-                out = self.lrelu(self.norm2(self.conv2(out), init=init))
-            out = self.norm3(self.conv3(out), init=init)
+                out = self.lrelu(self.norm2(self.conv2(out)))
+            out = self.norm3(self.conv3(out))
         elif self.norm == 'gdn':
             out = self.gdn1(self.conv1(x))
             if self.nin:
@@ -206,26 +206,26 @@ class InvBlockExp(keras.layers.Layer):
             if n_ops == 4:
                 self.I = SeqBlock(num_filters, self.split_len1, kernel_size, residual=residual, nin=nin, norm=norm)
 
-    def call(self, x, rev=False, init=False):
+    def call(self, x, rev=False):
         # x1, x2 = (x.narrow(1, 0, self.split_len1), x.narrow(1, self.split_len1, self.split_len2))
         x1 = x[:, :, :, :self.split_len1]
         x2 = x[:, :, :, self.split_len1:(self.split_len1 + self.split_len2)]
         if not rev:
             if self.n_ops == 4:
-                self.s1 = self.clamp * (keras.activations.sigmoid(self.I(x2, init=init)) * 2 - 1) + epsilon
-                y1 = tf.math.multiply(x1, tf.math.exp(self.s1)) + self.F(x2, init=init)
+                self.s1 = self.clamp * (keras.activations.sigmoid(self.I(x2)) * 2 - 1) + epsilon
+                y1 = tf.math.multiply(x1, tf.math.exp(self.s1)) + self.F(x2)
             else:
-                y1 = x1 + self.F(x2, init=init)
-            self.s2 = self.clamp * (keras.activations.sigmoid(self.H(y1, init=init)) * 2 - 1) + epsilon
-            y2 = tf.math.multiply(x2, tf.math.exp(self.s2)) + self.G(y1, init=init)
+                y1 = x1 + self.F(x2)
+            self.s2 = self.clamp * (keras.activations.sigmoid(self.H(y1)) * 2 - 1) + epsilon
+            y2 = tf.math.multiply(x2, tf.math.exp(self.s2)) + self.G(y1)
         else:
-            self.s2 = self.clamp * (keras.activations.sigmoid(self.H(x1, init=init)) * 2 - 1) + epsilon
+            self.s2 = self.clamp * (keras.activations.sigmoid(self.H(x1)) * 2 - 1) + epsilon
             y2 = tf.math.divide(x2 - self.G(x1), tf.math.exp(self.s2))
             if self.n_ops == 4:
                 self.s1 = self.clamp * (keras.activations.sigmoid(self.I(y2)) * 2 - 1) + epsilon
-                y1 = tf.math.divide(x1 - self.F(y2, init=init), tf.math.exp(self.s1))
+                y1 = tf.math.divide(x1 - self.F(y2), tf.math.exp(self.s1))
             else:
-                y1 = x1 - self.F(y2, init=init)
+                y1 = x1 - self.F(y2)
 
         return tf.concat([y1, y2], -1)
 
@@ -371,7 +371,7 @@ class InvCompressionNet(keras.Model):
         if inv_conv:
             self.operations.append(InvConv(current_channel))
             if use_norm:
-                self.operations.append(ActNorm(channel_in=(int(current_channel / 3), 
+                self.operations.append(MultiActNorm(channel_in=(int(current_channel / 3), 
                                                            int(2 * current_channel / 3))))
         self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
                         blk_type, num_filters=compute_n_filters(current_channel), 
@@ -385,7 +385,7 @@ class InvCompressionNet(keras.Model):
         if inv_conv:
             self.operations.append(InvConv(current_channel))
             if use_norm:
-                self.operations.append(ActNorm(channel_in=(int(current_channel / 3), 
+                self.operations.append(MultiActNorm(channel_in=(int(current_channel / 3), 
                                                            int(2 * current_channel / 3))))
         self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
                         blk_type, num_filters=compute_n_filters(current_channel), 
@@ -399,13 +399,13 @@ class InvCompressionNet(keras.Model):
         if inv_conv:
             self.operations.append(InvConv(current_channel))
             if use_norm:
-                self.operations.append(ActNorm(channel_in=(int(current_channel / 3), 
+                self.operations.append(MultiActNorm(channel_in=(int(current_channel / 3), 
                                                            int(2 * current_channel / 3))))
         self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
                         blk_type, num_filters=compute_n_filters(current_channel), 
                         kernel_size=kernel_size, residual=residual, nin=nin, norm=norm, n_ops=n_ops))
         
-    def call(self, x, rev=False, init=False):
+    def call(self, x, rev=False):
         out = []
         jacobian = 0
         if not rev:
@@ -413,7 +413,7 @@ class InvCompressionNet(keras.Model):
             for i in range(len(self.operations)):
                 if isinstance(self.operations[i], InvBlockExp) or \
                    isinstance(self.operations[i], ActNorm):
-                    xx = self.operations[i](xx, rev, init=init)
+                    xx = self.operations[i](xx, rev)
                 else:
                     xx = self.operations[i](xx, rev)
                 jacobian += self.operations[i].jacobian(xx, rev)
@@ -646,58 +646,57 @@ class SqueezeDownsampling(keras.layers.Layer):
         return 0
 
 
-# class ActNorm(keras.layers.Layer):
-#     def __init__(self, channel_in, init_scale=1., ema=None):
-#         super(ActNorm, self).__init__()
-#         assert isinstance(channel_in, tuple)
-#         self.channel_in = channel_in
-#         self.init_scale = init_scale
-#         self.logss = []
-#         self.bs = []
-#         for (i, ch) in enumerate(channel_in):
-#             if ch != 0:
-#                 self.logss.append(self.add_weight(name='logs_{}'.format(i), 
-#                                             shape=(ch, ),
-#                                             initializer=tf.constant_initializer(1),
-#                                             trainable=True))
-#                 self.bs.append(self.add_weight(name='b_{}'.format(i), 
-#                                             shape=(ch, ), 
-#                                             initializer=tf.constant_initializer(0), 
-#                                             trainable=True))
-#                 # exponential moving average
-#                 if ema is not None:
-#                     self.logss[i], self.bs[i] = ema_var([self.logss[i], self.bs[i]], ema)
+class MultiActNorm(keras.layers.Layer):
+    def __init__(self, channel_in, init_scale=1., ema=None):
+        super(MultiActNorm, self).__init__()
+        assert isinstance(channel_in, tuple)
+        self.channel_in = channel_in
+        self.init_scale = init_scale
+        self.logss = []
+        self.bs = []
+        for (i, ch) in enumerate(channel_in):
+            if ch != 0:
+                self.logss.append(self.add_weight(name='logs_{}'.format(i), 
+                                            shape=(ch, ),
+                                            initializer=tf.constant_initializer(1),
+                                            trainable=True))
+                self.bs.append(self.add_weight(name='b_{}'.format(i), 
+                                            shape=(ch, ), 
+                                            initializer=tf.constant_initializer(0), 
+                                            trainable=True))
+                # exponential moving average
+                if ema is not None:
+                    self.logss[i], self.bs[i] = ema_var([self.logss[i], self.bs[i]], ema)
 
-#     def call(self, x, rev=False, init=False):
-#         out = []
-#         if not isinstance(x, tuple) and self.channel_in[1] != 0:
-#             xs = (x[..., :self.channel_in[0]], x[..., self.channel_in[0]:])
-#         elif not isinstance(x, tuple):
-#             xs = (x, )
-#         else:
-#             xs = x
-#         for (i, x) in enumerate(xs):
-#             if init:
-#                 # print("the {} th logss[i] in shape: {}, bs[i] in shape: {}".format(i, self.logss[i].get_shape().as_list(), self.bs[i].get_shape().as_list()))
-#                 assert not rev 
-#                 m_init, v_init = tf.nn.moments(x, [0, 1, 2])
-#                 scale_init = self.init_scale * tf.rsqrt(v_init + 1e-8)
-#                 self.logss[i] = self.logss[i].assign(tf.log(1/(tf.sqrt(v_init)+1e-6))/3. * scale_init)
-#                 self.bs[i] = self.bs[i].assign(-m_init * scale_init)
-#                 # with tf.control_dependencies([self.logss[i], self.bs[i]]):
-#                 #     self.logss[i], self.bs[i] = tf.identity_n([self.logss[i], self.bs[i]])
+    def call(self, x, rev=False):
+        out = []
+        if not isinstance(x, tuple) and self.channel_in[1] != 0:
+            xs = (x[..., :self.channel_in[0]], x[..., self.channel_in[0]:])
+        elif not isinstance(x, tuple):
+            xs = (x, )
+        else:
+            xs = x
+        for (i, x) in enumerate(xs):
+            # print("the {} th logss[i] in shape: {}, bs[i] in shape: {}".format(i, self.logss[i].get_shape().as_list(), self.bs[i].get_shape().as_list()))
+            assert not rev 
+            m_init, v_init = tf.nn.moments(x, [0, 1, 2])
+            scale_init = self.init_scale * tf.rsqrt(v_init + 1e-8)
+            self.logss[i] = self.logss[i].assign(tf.log(1/(tf.sqrt(v_init)+1e-6))/3. * scale_init)
+            self.bs[i] = self.bs[i].assign(-m_init * scale_init)
+            # with tf.control_dependencies([self.logss[i], self.bs[i]]):
+            #     self.logss[i], self.bs[i] = tf.identity_n([self.logss[i], self.bs[i]])
 
-#             b = tf.reshape(self.bs[i], [1, 1, 1, self.channel_in[i]])
-#             logs = tf.reshape(self.logss[i], [1, 1, 1, self.channel_in[i]]) * 3.
-#             if not rev:
-#                 x = (x + b) * tf.exp(logs)
-#             else:
-#                 x = x * tf.exp(-logs) - b
-#             out.append(x)
+            b = tf.reshape(self.bs[i], [1, 1, 1, self.channel_in[i]])
+            logs = tf.reshape(self.logss[i], [1, 1, 1, self.channel_in[i]]) * 3.
+            if not rev:
+                x = (x + b) * tf.exp(logs)
+            else:
+                x = x * tf.exp(-logs) - b
+            out.append(x)
 
-#         if not isinstance(x, tuple):
-#             return tf.concat(out, axis=-1)
-#         return out
+        if not isinstance(x, tuple):
+            return tf.concat(out, axis=-1)
+        return out
 
 
 class ActNorm(tf.keras.layers.Layer):
@@ -748,13 +747,14 @@ class ActNorm(tf.keras.layers.Layer):
         #     return super(ActNorm, self).__call__(inputs, *args, **kwargs)
         # return transformed_random_variable.TransformedRandomVariable(inputs, self)
 
-    def call(self, inputs):
-        return (inputs + self.bias) * tf.exp(self.log_scale * 3.)
-
-    def reverse(self, inputs):
+    def call(self, inputs, rev=False):
+        if not rev:
+            return (inputs + self.bias) * tf.exp(self.log_scale * 3.)
         return inputs * tf.exp(-self.log_scale) - self.bias
+    # def reverse(self, inputs):
+    #     return inputs * tf.exp(-self.log_scale) - self.bias
 
-    def log_det_jacobian(self, inputs):
+    def jacobian(self, inputs, rev=False):
         """Returns log det | dx / dy | = num_events * sum log | scale |."""
         del inputs  # unused
         # Number of events is number of all elements excluding the batch and
@@ -762,4 +762,3 @@ class ActNorm(tf.keras.layers.Layer):
         num_events = tf.reduce_prod(tf.shape(inputs)[1:-1])
         log_det_jacobian = num_events * tf.reduce_sum(self.log_scale)
         return log_det_jacobian
-
