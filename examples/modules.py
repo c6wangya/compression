@@ -700,7 +700,7 @@ class ActNorm(tf.keras.layers.Layer):
         # Number of events is number of all elements excluding the batch and
         # channel dimensions.
         num_events = tf.reduce_prod(tf.shape(inputs)[1:-1])
-        log_det_jacobian = num_events * tf.reduce_sum(self.log_scale)
+        log_det_jacobian =  tf.cast(num_events, 'float32') * tf.reduce_sum(self.log_scale)
         return log_det_jacobian
 
 
