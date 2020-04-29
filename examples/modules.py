@@ -720,3 +720,10 @@ class MultiActNorm(keras.layers.Layer):
         x1 = self.actnorm_1(x1, rev=rev)
         x2 = self.actnorm_2(x2, rev=rev)
         return tf.concat([x1, x2], -1)
+    
+    def jacobian(self, inputs, rev=False):
+        ch = inputs.get_shape().as_list()[-1]
+        x1 = inputs[..., :ch // self.split_ratio]
+        x2 = inputs[..., ch // self.split_ratio:]
+        return self.actnorm_1.jacobian(x1) + \
+               self.actnorm_2.jacobian(x2)
