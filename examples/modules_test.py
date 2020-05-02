@@ -69,6 +69,14 @@ class ModuleTest(tf.test.TestCase):
         self.assertAllClose(mean - recons_mean, np.zeros(channels), atol=0.25)
         self.assertAllClose(variance - recons_variance, np.zeros(channels), atol=0.25)
 
+    def test_diff_round(self):
+        input_tensor = [1.1, 2.3, 5.9, 1.8]
+        expected_output = [1, 2, 6, 2]
+        expected_gradients = [1, 1, 1, 1]
+        output_tensor = m.differentiable_round(tf.Variable(input_tensor))
+        grad_computed = tf.test.compute_gradient(output_tensor, expected_output)
+        self.assertAllEqual(grad_computed, expected_gradients)
+
 
 if __name__ == '__main__':
     os.environ["CUDA_VISIBLE_DEVICES"]="{}".format(2)
