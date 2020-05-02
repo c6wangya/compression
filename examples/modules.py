@@ -191,7 +191,6 @@ class IntInvBlock(keras.layers.Layer):
                  clamp=1., kernel_size=3, residual=False, nin=True, 
                  norm='bn', n_ops=3):
         super(IntInvBlock, self).__init__()
-        assert isinstance(func, (DenseBlock, SeqBlock))
         self.func = func
         self.channel_split_ratio = channel_split_ratio
         self.num_filters = num_filters
