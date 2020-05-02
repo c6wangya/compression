@@ -71,12 +71,13 @@ class ModuleTest(tf.test.TestCase):
 
     def test_diff_round(self):
         with self.test_session():
-            input_tensor = [1.1, 2.3, 5.9, 1.8]
+            input_tensor = tf.Variable([1.1, 2.3, 5.9, 1.8])
             expected_output = [1, 2, 6, 2]
-            expected_gradients = [1, 1, 1, 1]
-            output_tensor = m.differentiable_round(tf.Variable(input_tensor))
-            grad_computed = tf.test.compute_gradient(output_tensor, expected_output)
-            self.assertAllEqual(grad_computed, expected_gradients)
+            expected_gradients = np.identity(4)
+            output_tensor = m.differentiable_round(input_tensor)
+            grad_computed = tf.test.compute_gradient(input_tensor, (4,), output_tensor, (4,))
+            self.assertAllClose(output_tensor, expected_output, atol=1e-3)
+            self.assertAllClose(grad_computed, expected_gradients, atol=1e-3)
 
 
 if __name__ == '__main__':
