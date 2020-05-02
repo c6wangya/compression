@@ -188,14 +188,6 @@ def save_weights(saver, sess, ckpt_dir, iters):
         os.mkdir(path=ckpt_dir)
     saver.save(sess, save_path=ckpt_dir + '/model_{}.ckpt'.format(iters))
 
-@tf.custom_gradient
-def differentiable_round(x):
-    """ customized differentiable round operation"""
-    def grad(dy):
-        return dy
-    return tf.round(x), grad
-
-
 def lr_schedule(step, mode, warmup_steps=10000, min_ratio=0.1, decay=0.999995):
     assert mode == 'constant' or mode == 'scheduled'
     if mode == 'scheduled':
@@ -285,7 +277,7 @@ def train(args):
                     kernel_size=args.kernel_size, residual=args.residual, 
                     nin=args.nin, norm=args.norm, n_ops=args.n_ops, 
                     downsample_type=args.downsample_type, inv_conv=(not args.non1x1), 
-                    use_norm=args.use_norm)
+                    use_norm=args.use_norm, int_flow=args.int_flow)
             if args.guidance_type == "baseline_pretrain":
                 analysis_transform = m.AnalysisTransform(args.channel_out[0])
                 synthesis_transform = m.SynthesisTransform(args.channel_out[0])
@@ -326,7 +318,7 @@ def train(args):
             if args.guidance_type == "baseline":
                 y_base = analysis_transform(x)
                 if args.prepos_ste: 
-                    y_base = differentiable_round(y_base)
+                    y_base = m.differentiable_round(y_base)
             # # place holder for init bool
             # init = tf.placeholder(tf.bool, (), 'init')
             # x = print_act_stats(x, "x")
@@ -353,7 +345,7 @@ def train(args):
                 y = tf.clip_by_value(y, 0, 1)
             
             if args.prepos_ste:
-                y = differentiable_round(y)
+                y = m.differentiable_round(y)
             
             if args.no_aux and args.guidance_type == "baseline":
                 y_tilde, likelihoods = entropy_bottleneck(tf.stop_gradient(y_base), training=True)
@@ -371,7 +363,7 @@ def train(args):
                     input_rev.append(tf.random_normal(shape=zshape))
             
             if args.ste or args.prepos_ste:
-                y_tilde = differentiable_round(y_tilde)
+                y_tilde = m.differentiable_round(y_tilde)
             input_rev.append(y_tilde)
             x_tilde, _ = inv_transform(input_rev, rev=True)
             x_tilde = x_tilde[-1]
@@ -723,7 +715,8 @@ def compress(args):
                     blk_type=args.blk_type, num_filters=args.num_filters,
                     kernel_size=args.kernel_size, residual=args.residual, 
                     nin=args.nin, norm=args.norm, n_ops=args.n_ops, 
-                    downsample_type=args.downsample_type, inv_conv=(not args.non1x1))
+                    downsample_type=args.downsample_type, inv_conv=(not args.non1x1), 
+                    use_norm=args.use_norm, int_flow=args.int_flow)
             if "baseline" in args.guidance_type:
                 analysis_transform = m.AnalysisTransform(args.channel_out[0])
                 synthesis_transform = m.SynthesisTransform(args.channel_out[0])
@@ -1205,6 +1198,9 @@ def parse_args(argv):
         cmd.add_argument(
                 "--use_norm", action="store_true",
                 help="whether to use norm after 1x1 conv.")
+        cmd.add_argument(
+                "--int_flow", action="store_true",
+                help="whether to use integer discrete flow.")
 
     # 'compress' subcommand.
     compress_cmd=subparsers.add_parser(

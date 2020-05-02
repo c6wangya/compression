@@ -24,27 +24,49 @@ import numpy as np
 import tensorflow.compat.v2 as tf
 
 
-class NormalizationTest(tf.test.TestCase):
+class ModuleTest(tf.test.TestCase):
 
-  def testActNorm(self):
-    np.random.seed(83243)
-    batch_size = 25
-    length = 15
-    channels = 4
-    inputs = 3. + 0.8 * np.random.randn(batch_size, length, channels)
-    inputs = tf.cast(inputs, tf.float32)
-    layer = m.ActNorm()
-    outputs = layer(inputs)
-    mean, variance = tf.nn.moments(outputs, axes=[0, 1])
-    self.assertAllClose(mean, np.zeros(channels), atol=1e-3)
-    self.assertAllClose(variance, np.ones(channels), atol=1e-3)
+    def testActNorm(self):
+        np.random.seed(83243)
+        batch_size = 25
+        length = 15
+        channels = 4
+        inputs = 3. + 0.8 * np.random.randn(batch_size, length, channels)
+        inputs = tf.cast(inputs, tf.float32)
+        layer = m.ActNorm()
+        outputs = layer(inputs)
+        mean, variance = tf.nn.moments(outputs, axes=[0, 1])
+        self.assertAllClose(mean, np.zeros(channels), atol=1e-3)
+        self.assertAllClose(variance, np.ones(channels), atol=1e-3)
 
-    inputs = 3. + 0.8 * np.random.randn(batch_size, length, channels)
-    inputs = tf.cast(inputs, tf.float32)
-    outputs = layer(inputs)
-    mean, variance = tf.nn.moments(outputs, axes=[0, 1])
-    self.assertAllClose(mean, np.zeros(channels), atol=0.25)
-    self.assertAllClose(variance, np.ones(channels), atol=0.25)
+        inputs = 3. + 0.8 * np.random.randn(batch_size, length, channels)
+        inputs = tf.cast(inputs, tf.float32)
+        outputs = layer(inputs)
+        mean, variance = tf.nn.moments(outputs, axes=[0, 1])
+        self.assertAllClose(mean, np.zeros(channels), atol=0.25)
+        self.assertAllClose(variance, np.ones(channels), atol=0.25)
+
+    def testCoupling(self):
+        np.random.seed(83243)
+        batch_size = 25
+        length = 16
+        channels = 12
+        inputs = 3. + 0.8 * np.random.randn(batch_size, length, length, channels)
+        inputs = tf.cast(inputs, tf.float32)
+        layer = m.IntInvBlock(m.SeqBlock, 3)
+        mean, variance = tf.nn.moments(inputs, axes=[0, 1, 2])
+        recons = layer(layer(inputs), rev=True)
+        recons_mean, recons_variance = tf.nn.moments(recons, axes=[0, 1, 2])
+        self.assertAllClose(mean - recons_mean, np.zeros(channels), atol=1e-3)
+        self.assertAllClose(variance - recons_variance, np.zeros(channels), atol=1e-3)
+
+        inputs = 3. + 0.8 * np.random.randn(batch_size, length, length, channels)
+        inputs = tf.cast(inputs, tf.float32)
+        mean, variance = tf.nn.moments(inputs, axes=[0, 1, 2])
+        recons = layer(layer(inputs), rev=True)
+        recons_mean, recons_variance = tf.nn.moments(recons, axes=[0, 1, 2])
+        self.assertAllClose(mean - recons_mean, np.zeros(channels), atol=0.25)
+        self.assertAllClose(variance - recons_variance, np.zeros(channels), atol=0.25)
 
 
 if __name__ == '__main__':

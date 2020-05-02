@@ -30,6 +30,14 @@ def ema_var(var, ema):
     return ema.average(var)
 
 
+@tf.custom_gradient
+def differentiable_round(x):
+    """ customized differentiable round operation"""
+    def grad(dy):
+        return dy
+    return tf.round(x), grad
+
+
 class AnalysisTransform(keras.layers.Layer):
     """The analysis transform."""
 
@@ -91,7 +99,7 @@ class SynthesisTransform(keras.layers.Layer):
 
 
 class SeqBlock(keras.layers.Layer):
-    def __init__(self, num_filters, channel_out, kernel_size, residual, nin, norm="bn", an_ratio=1, *args, **kwargs):
+    def __init__(self, num_filters, channel_out, kernel_size=3, residual=False, nin=True, norm="bn", an_ratio=1, *args, **kwargs):
         super(SeqBlock, self).__init__(*args, **kwargs)
         self.residual = residual
         self.nin = nin
@@ -178,33 +186,82 @@ class DenseBlock(keras.layers.Layer):
         return x5
 
 
+class IntInvBlock(keras.layers.Layer):
+    def __init__(self, func, channel_split_ratio, num_filters=128, 
+                 clamp=1., kernel_size=3, residual=False, nin=True, 
+                 norm='bn', n_ops=3):
+        super(IntInvBlock, self).__init__()
+        assert isinstance(func, (DenseBlock, SeqBlock))
+        self.func = func
+        self.channel_split_ratio = channel_split_ratio
+        self.num_filters = num_filters
+    
+    def build(self, input_shape):
+        input_shape = tf.TensorShape(input_shape)
+        last_dim = input_shape[-1]
+        self.split_len1 = last_dim // self.channel_split_ratio
+        self.split_len2 = last_dim - self.split_len1
+        if isinstance(self.func, DenseBlock):
+            self.F = DenseBlock(self.split_len1)
+            self.G = DenseBlock(self.split_len2)
+        else:
+            self.F = SeqBlock(self.num_filters, self.split_len1)
+            self.G = SeqBlock(self.num_filters, self.split_len2)
+        self.built = True
+
+    def call(self, x, rev=False):
+        x1 = x[:, :, :, :self.split_len1]
+        x2 = x[:, :, :, self.split_len1:]
+        if not rev:
+            y1 = x1 + self.differentiable_round(self.F(x2))
+            y2 = x2 + self.differentiable_round(self.G(y1))
+        else:
+            y2 = x2 - self.differentiable_round(self.G(x1))
+            y1 = x1 - self.differentiable_round(self.F(y2))
+        return tf.concat([y1, y2], -1)
+
+    def jacobian(self, x, rev=False):
+        return 0.
+
+
 class InvBlockExp(keras.layers.Layer):
-    def __init__(self, channel_num, channel_split_num, blk_type='dense', num_filters=128, 
-                clamp=1., kernel_size=3, residual=False, nin=True, norm='bn', n_ops=3):
+    def __init__(self, func, channel_split_ratio, num_filters=128, 
+                 clamp=1., kernel_size=3, residual=False, nin=True, 
+                 norm='bn', n_ops=3):
         super(InvBlockExp, self).__init__()
-
-        self.split_len1 = channel_split_num
-        self.split_len2 = channel_num - channel_split_num
-        self.n_ops = n_ops
-        print("split_len1: {} and split_len2: {}".format(self.split_len1, self.split_len2))
-
+        assert isinstance(func, (DenseBlock, SeqBlock))
+        self.func = func
+        self.channel_split_ratio = channel_split_ratio
+        self.num_filters = num_filters
         self.clamp = clamp
+        self.kernel_size = kernel_size
+        self.residual = residual
+        self.nin = nin
+        self.norm = norm
+        self.n_ops = n_ops
 
-        assert blk_type == 'dense' or blk_type == 'seq'
-        assert n_ops == 3 or n_ops == 4
-
-        if blk_type == 'dense':
+    def build(self, input_shape):
+        input_shape = tf.TensorShape(input_shape)
+        last_dim = input_shape[-1]
+        self.split_len1 = last_dim // self.channel_split_ratio
+        self.split_len2 = last_dim - self.split_len1
+        if isinstance(self.func, DenseBlock):
             self.F = DenseBlock(self.split_len1)
             self.G = DenseBlock(self.split_len2)
             self.H = DenseBlock(self.split_len2)
-            if n_ops == 4:
+            if self.n_ops == 4:
                 self.I = DenseBlock(self.split_len1)
         else:
-            self.F = SeqBlock(num_filters, self.split_len1, kernel_size, residual=residual, nin=nin, norm=norm)
-            self.G = SeqBlock(num_filters, self.split_len2, kernel_size, residual=residual, nin=nin, norm=norm)
-            self.H = SeqBlock(num_filters, self.split_len2, kernel_size, residual=residual, nin=nin, norm=norm)
-            if n_ops == 4:
-                self.I = SeqBlock(num_filters, self.split_len1, kernel_size, residual=residual, nin=nin, norm=norm)
+            self.F = SeqBlock(self.num_filters, self.split_len1, self.kernel_size, 
+                              residual=self.residual, nin=self.nin, norm=self.norm)
+            self.G = SeqBlock(self.num_filters, self.split_len2, self.kernel_size, 
+                              residual=self.residual, nin=self.nin, norm=self.norm)
+            self.H = SeqBlock(self.num_filters, self.split_len2, self.kernel_size, 
+                              residual=self.residual, nin=self.nin, norm=self.norm)
+            if self.n_ops == 4:
+                self.I = SeqBlock(self.num_filters, self.split_len1, self.kernel_size, 
+                                  residual=self.residual, nin=self.nin, norm=self.norm)
+        self.built = True
 
     def call(self, x, rev=False):
         # x1, x2 = (x.narrow(1, 0, self.split_len1), x.narrow(1, self.split_len1, self.split_len2))
@@ -240,6 +297,7 @@ class InvBlockExp(keras.layers.Layer):
                 jac -= tf.reduce_sum(self.s1)
 
         return jac / 8
+
 
 class HaarDownsampling(keras.layers.Layer):
     def __init__(self, channel_in, *args, **kwargs):
@@ -339,7 +397,7 @@ class InvConv(keras.layers.Layer):
 class InvCompressionNet(keras.Model):
     def __init__(self, channel_in, channel_out, blk_type, num_filters, \
                 kernel_size, residual, nin, norm, n_ops, downsample_type, \
-                inv_conv, use_norm=False):
+                inv_conv, use_norm=False, int_flow=False):
         super(InvCompressionNet, self).__init__()
         assert downsample_type == "haar" or downsample_type == "squeeze"
         # self.upscale_log = upscale_log
@@ -361,6 +419,8 @@ class InvCompressionNet(keras.Model):
 
             return n_filters
 
+        self.coupling_layer = InvBlockExp if not int_flow else IntInvBlock
+        self.func = DenseBlock if blk_type == 'dense' else SeqBlock
         current_channel = self.channel_in
         for _ in range(2):
             if downsample_type == "haar":
@@ -372,10 +432,10 @@ class InvCompressionNet(keras.Model):
             self.operations.append(InvConv(current_channel))
             if use_norm:
                 self.operations.append(MultiActNorm(split_ratio=3))
-        self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
-                        blk_type, num_filters=compute_n_filters(current_channel), 
-                        kernel_size=kernel_size, residual=residual, nin=nin, norm=norm, n_ops=n_ops))
-
+        self.operations.append(self.coupling_layer(self.func, 3, 
+                        num_filters=compute_n_filters(current_channel), 
+                        kernel_size=kernel_size, residual=residual, nin=nin, 
+                        norm=norm, n_ops=n_ops))
         if downsample_type == "haar":
             self.operations.append(HaarDownsampling(current_channel))
         else:
@@ -385,10 +445,10 @@ class InvCompressionNet(keras.Model):
             self.operations.append(InvConv(current_channel))
             if use_norm:
                 self.operations.append(MultiActNorm(split_ratio=3))
-        self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
-                        blk_type, num_filters=compute_n_filters(current_channel), 
-                        kernel_size=kernel_size, residual=residual, nin=nin, norm=norm, n_ops=n_ops))
-
+        self.operations.append(self.coupling_layer(self.func, 3, 
+                        num_filters=compute_n_filters(current_channel), 
+                        kernel_size=kernel_size, residual=residual, nin=nin, 
+                        norm=norm, n_ops=n_ops))
         if downsample_type == "haar":
             self.operations.append(HaarDownsampling(current_channel))
         else:
@@ -398,9 +458,10 @@ class InvCompressionNet(keras.Model):
             self.operations.append(InvConv(current_channel))
             if use_norm:
                 self.operations.append(MultiActNorm(split_ratio=3))
-        self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
-                        blk_type, num_filters=compute_n_filters(current_channel), 
-                        kernel_size=kernel_size, residual=residual, nin=nin, norm=norm, n_ops=n_ops))
+        self.operations.append(self.coupling_layer(self.func, 3, 
+                        num_filters=compute_n_filters(current_channel), 
+                        kernel_size=kernel_size, residual=residual, nin=nin, 
+                        norm=norm, n_ops=n_ops))
         
     def call(self, x, rev=False):
         out = []
