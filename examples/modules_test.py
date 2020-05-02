@@ -22,6 +22,7 @@ from __future__ import print_function
 import modules as m
 import numpy as np
 import tensorflow.compat.v2 as tf
+import os
 
 
 class ModuleTest(tf.test.TestCase):
@@ -70,5 +71,6 @@ class ModuleTest(tf.test.TestCase):
 
 
 if __name__ == '__main__':
-  tf.enable_v2_behavior()
-  tf.test.main()
+    os.environ["CUDA_VISIBLE_DEVICES"]="{}".format(2)
+    tf.enable_v2_behavior()
+    tf.test.main()
