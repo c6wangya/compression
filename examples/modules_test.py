@@ -75,7 +75,8 @@ class ModuleTest(tf.test.TestCase):
             expected_output = [1, 2, 6, 2]
             expected_gradients = np.identity(4)
             output_tensor = m.differentiable_round(input_tensor)
-            grad_computed = tf.test.compute_gradient(input_tensor, (4,), output_tensor, (4,))
+            grad_computed = tf.test.compute_gradient(m.differentiable_round, input_tensor)
+            # grad_computed = tf.test.compute_gradient(input_tensor, (4,), output_tensor, (4,))
             self.assertAllClose(output_tensor, expected_output, atol=1e-3)
             self.assertAllClose(grad_computed, expected_gradients, atol=1e-3)
 
