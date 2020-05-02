@@ -212,11 +212,11 @@ class IntInvBlock(keras.layers.Layer):
         x1 = x[:, :, :, :self.split_len1]
         x2 = x[:, :, :, self.split_len1:]
         if not rev:
-            y1 = x1 + self.differentiable_round(self.F(x2))
-            y2 = x2 + self.differentiable_round(self.G(y1))
+            y1 = x1 + differentiable_round(self.F(x2))
+            y2 = x2 + differentiable_round(self.G(y1))
         else:
-            y2 = x2 - self.differentiable_round(self.G(x1))
-            y1 = x1 - self.differentiable_round(self.F(y2))
+            y2 = x2 - differentiable_round(self.G(x1))
+            y1 = x1 - differentiable_round(self.F(y2))
         return tf.concat([y1, y2], -1)
 
     def jacobian(self, x, rev=False):
