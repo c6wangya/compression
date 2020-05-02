@@ -1200,6 +1200,9 @@ def parse_args(argv):
                 "--ste", action="store_true",
                 help="whether to use ste for recons.")
         cmd.add_argument(
+                "--prepos_ste", action="store_true",
+                help="whether to use prepositioned ste for recons.")
+        cmd.add_argument(
                 "--use_norm", action="store_true",
                 help="whether to use norm after 1x1 conv.")
 
