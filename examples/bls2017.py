@@ -325,6 +325,8 @@ def train(args):
         else:  # For InvCompressionNet
             if args.guidance_type == "baseline":
                 y_base = analysis_transform(x)
+                if args.prepos_ste: 
+                    y_base = differentiable_round(y_base)
             # # place holder for init bool
             # init = tf.placeholder(tf.bool, (), 'init')
             # x = print_act_stats(x, "x")
@@ -350,6 +352,9 @@ def train(args):
             if args.clamp:
                 y = tf.clip_by_value(y, 0, 1)
             
+            if args.prepos_ste:
+                y = differentiable_round(y)
+            
             if args.no_aux and args.guidance_type == "baseline":
                 y_tilde, likelihoods = entropy_bottleneck(tf.stop_gradient(y_base), training=True)
             elif args.no_aux:
@@ -365,8 +370,8 @@ def train(args):
                 else:
                     input_rev.append(tf.random_normal(shape=zshape))
             
-            if args.ste:
-                y_tilde = differentiable_round(y)
+            if args.ste or args.prepos_ste:
+                y_tilde = differentiable_round(y_tilde)
             input_rev.append(y_tilde)
             x_tilde, _ = inv_transform(input_rev, rev=True)
             x_tilde = x_tilde[-1]
