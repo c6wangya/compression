@@ -74,14 +74,52 @@ class ModuleTest(tf.test.TestCase):
             input_tensor = tf.Variable([1.1, 2.3, 5.9, 1.8])
             expected_output = [1, 2, 6, 2]
             expected_gradients = np.identity(4)
-            output_tensor = m.differentiable_round(input_tensor)
-            theoretical_grad, numerical_grad = tf.test.compute_gradient(m.differentiable_round, [input_tensor])
+            # output_tensor = m.differentiable_round(input_tensor)
+            with tf.GradientTape() as tape:
+                tape.watch(input_tensor)
+                output_tensor = m.differentiable_round(input_tensor)
+            # grads = tape.gradient(output_tensor, [input_tensor])
+            theoretical_grad, numerical_grad = tf.test.compute_gradient(tf.identity, [input_tensor])
+            # theoretical_grad, numerical_grad = tf.test.compute_gradient(m.differentiable_round, [input_tensor])
             theoretical_grad = tf.reshape(theoretical_grad, (4, 4))
             numerical_grad = tf.reshape(numerical_grad, (4, 4))
             # grad_computed = tf.test.compute_gradient(input_tensor, (4,), output_tensor, (4,))
             self.assertAllClose(output_tensor, expected_output, atol=1e-3)
             self.assertAllClose(theoretical_grad, expected_gradients, atol=1e-3)
-            self.assertAllClose(numerical_grad, expected_gradients, atol=1e-3)
+
+    def test_dense_block(self):
+        np.random.seed(83243)
+        batch_size = 25
+        length = 16
+        channels = 12
+        inputs = 3. + 0.8 * np.random.randn(batch_size, length, length, channels)
+        inputs = tf.cast(inputs, tf.float32)
+        layer = m.IntInvBlock(m.DenseBlock, 3)
+        mean, variance = tf.nn.moments(inputs, axes=[0, 1, 2])
+        recons = layer(layer(inputs), rev=True)
+        recons_mean, recons_variance = tf.nn.moments(recons, axes=[0, 1, 2])
+        self.assertAllClose(mean - recons_mean, np.zeros(channels), atol=1e-3)
+        self.assertAllClose(variance - recons_variance, np.zeros(channels), atol=1e-3)
+
+    def test_squeeze(self):
+        input_tensor = tf.Variable([[j + i * 4 for j in range(4)] for i in range(4)])
+        input_tensor = tf.reshape(input_tensor, (1, 4, 4, 1))
+        expected_output = \
+        [[
+            [
+                [0, 1, 4, 5], 
+                [2, 3, 6, 7]
+            ], 
+            [
+                [8, 9, 12, 13], 
+                [10, 11, 14, 15]
+            ]
+        ]]
+        layer = m.SqueezeDownsampling()
+        outputs = layer(input_tensor)
+        recons = layer(outputs, rev=True)
+        self.assertAllClose(outputs, expected_output, atol=1e-3)
+        self.assertAllClose(recons - input_tensor, np.zeros_like(input_tensor), atol=1e-3)
 
 
 if __name__ == '__main__':

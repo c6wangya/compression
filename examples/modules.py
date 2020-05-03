@@ -160,30 +160,81 @@ class SeqBlock(keras.layers.Layer):
         return out
 
 
-class DenseBlock(keras.layers.Layer):
-    def __init__(self, channel_out, gc=8, *args, **kwargs):
-        super(DenseBlock, self).__init__(*args, **kwargs)
-        self.conv1 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5), 
-            padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
-        self.conv2 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5),
-            padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
-        self.conv3 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5),
-            padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
-        self.conv4 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5),
-            padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
-        self.conv5 = keras.layers.Conv2D(filters=channel_out, kernel_size=(5, 5),
-            padding='same', data_format='channels_last', kernel_initializer='zeros')
-        self.lrelu = keras.layers.LeakyReLU(0.2)
+# class DenseBlock(keras.layers.Layer):
+#     def __init__(self, channel_out, gc=8, *args, **kwargs):
+#         super(DenseBlock, self).__init__(*args, **kwargs)
+#         self.conv1 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5), 
+#             padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
+#         self.conv2 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5),
+#             padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
+#         self.conv3 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5),
+#             padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
+#         self.conv4 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5),
+#             padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
+#         self.conv5 = keras.layers.Conv2D(filters=channel_out, kernel_size=(5, 5),
+#             padding='same', data_format='channels_last', kernel_initializer='zeros')
+#         self.lrelu = keras.layers.LeakyReLU(0.2)
+
+#     def call(self, x):
+#         x1 = self.conv1(x)
+#         x1 = self.lrelu(x1)
+#         # x1 = self.lrelu(self.conv1(x))
+#         x2 = self.lrelu(self.conv2(tf.concat([x, x1], -1)))
+#         x3 = self.lrelu(self.conv3(tf.concat([x, x1, x2], -1)))
+#         x4 = self.lrelu(self.conv4(tf.concat([x, x1, x2, x3], -1)))
+#         x5 = self.conv5(tf.concat([x, x1, x2, x3, x4], -1))
+#         return x5
+
+
+class DenseLayer(keras.layers.Layer):
+    def __init__(self, args, channel_out, activation):
+        super(DenseLayer, self).__init__()
+        self.channel_out = channel_out
+        self.activation = activation
+
+    def build(self, input_shape):
+        input_shape = tf.TensorShape(input_shape)
+        last_dim = input_shape[-1]
+        self.model = keras.Sequential
+        (
+            [
+                keras.layers.Conv2D(filters=last_dim, kernel_size=(1, 1),
+                        padding='same', data_format='channels_last', 
+                        kernel_initializer='glorot_normal'), 
+                self.activation(), 
+                keras.layers.Conv2D(filters=self.channel_out, kernel_size=(3, 3),
+                        padding='same', data_format='channels_last', 
+                        kernel_initializer='glorot_normal'),
+                self.activation()
+            ]
+        )
+        self.built = True
 
     def call(self, x):
-        x1 = self.conv1(x)
-        x1 = self.lrelu(x1)
-        # x1 = self.lrelu(self.conv1(x))
-        x2 = self.lrelu(self.conv2(tf.concat([x, x1], -1)))
-        x3 = self.lrelu(self.conv3(tf.concat([x, x1, x2], -1)))
-        x4 = self.lrelu(self.conv4(tf.concat([x, x1, x2, x3], -1)))
-        x5 = self.conv5(tf.concat([x, x1, x2, x3, x4], -1))
-        return x5
+        h = self.model(x)
+        return tf.concat([x, h], axis=-1)
+
+class DenseBlock(keras.layers.Layer):
+    def __init__(self, channel_out, depth=12, activation=keras.layers.LeakyReLU):
+        super(DenseBlock, self).__init__()
+        self.channel_out = channel_out
+        self.depth = depth
+        self.activation = activation
+        
+    def build(self, input_shape):
+        input_shape = tf.TensorShape(input_shape)
+        channel_cur = input_shape[-1]
+        future_growth = self.channel_out - channel_cur
+        self.model = keras.Sequential()
+        for d in range(self.depth):
+            growth = future_growth // (self.depth - d)
+            self.model.add(DenseLayer(growth, self.activation))
+            channel_cur += growth
+            future_growth -= growth
+        self.built = True
+        
+    def call(self, x):
+        return self.model(x)
 
 
 class IntInvBlock(keras.layers.Layer):
@@ -391,6 +442,13 @@ class InvConv(keras.layers.Layer):
             jac = - tf.cast(tf.log(abs(tf.matrix_determinant(
                 tf.cast(self.w, 'float64')))), 'float32') * H * W
         return tf.reduce_mean(jac)
+
+class IntInvCompressionNet(keras.Model):
+    def __init__(self, channel_out, blk_type, num_filters, \
+                kernel_size, residual, nin, norm, n_ops, downsample_type, \
+                inv_conv, use_norm=False, int_flow=False):
+        super(IntInvCompressionNet, self).__init__()
+        
 
 
 class InvCompressionNet(keras.Model):
@@ -698,8 +756,19 @@ class SqueezeDownsampling(keras.layers.Layer):
     def jacobian(self, x, rev=False):
         return 0
 
+# def space_to_depth(x):
+#     xs = x.size()
+#     # Pick off every second element
+#     x = x.view(xs[0], xs[1], xs[2] // 2, 2, xs[3] // 2, 2)
+#     # Transpose picked elements next to channels.
+#     x = x.permute((0, 1, 3, 5, 2, 4)).contiguous()
+#     # Combine with channels.
+#     x = x.view(xs[0], xs[1] * 4, xs[2] // 2, xs[3] // 2)
+#     return x
 
-class ActNorm(tf.keras.layers.Layer):
+
+
+class ActNorm(keras.layers.Layer):
     """Actnorm, an affine reversible layer (Prafulla and Kingma, 2018).
     Weights use data-dependent initialization in which outputs have zero mean
     and unit variance per channel (last dimension). The mean/variance statistics
@@ -707,7 +776,7 @@ class ActNorm(tf.keras.layers.Layer):
     """
 
     def __init__(self, 
-                 epsilon=tf.keras.backend.epsilon(), 
+                 epsilon=keras.backend.epsilon(), 
                  ema=None, 
                  **kwargs):
         super(ActNorm, self).__init__(**kwargs)
