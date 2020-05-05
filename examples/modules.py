@@ -187,7 +187,7 @@ class SeqBlock(keras.layers.Layer):
 
 
 class DenseLayer(keras.layers.Layer):
-    def __init__(self, args, channel_out, activation):
+    def __init__(self, channel_out, activation):
         super(DenseLayer, self).__init__()
         self.channel_out = channel_out
         self.activation = activation
@@ -350,10 +350,13 @@ class InvBlockExp(keras.layers.Layer):
 
 
 class HaarDownsampling(keras.layers.Layer):
-    def __init__(self, channel_in, *args, **kwargs):
-        super(HaarDownsampling, self).__init__(*args, **kwargs)
-        self.channel_in = channel_in
 
+    def __init__(self, *args, **kwargs):
+        super(HaarDownsampling, self).__init__(*args, **kwargs)
+
+    def build(self, input_shape):
+        input_shape = tf.TensorShape(input_shape)
+        self.channel_in = input_shape[-1]
         # self.haar_weights = np.ones([4, 1, 2, 2])
         self.haar_weights = np.ones([2, 2, 1, 4])
         self.haar_weights[1, 0, 0, 1] = -1
@@ -370,6 +373,7 @@ class HaarDownsampling(keras.layers.Layer):
         self.conv_transpose = keras.layers.Conv2DTranspose(filters=1, kernel_size=2, 
                     strides=2, padding='valid', kernel_initializer=self.haar_weights, 
                     use_bias=False, trainable=False)
+        self.built = True
 
     def call(self, x, rev=False):
         self.x_shape = x.get_shape().as_list()[1:]
@@ -443,12 +447,78 @@ class InvConv(keras.layers.Layer):
                 tf.cast(self.w, 'float64')))), 'float32') * H * W
         return tf.reduce_mean(jac)
 
-class IntInvCompressionNet(keras.Model):
-    def __init__(self, channel_out, blk_type, num_filters, \
-                kernel_size, residual, nin, norm, n_ops, downsample_type, \
-                inv_conv, use_norm=False, int_flow=False):
-        super(IntInvCompressionNet, self).__init__()
-        
+class Permute(keras.layers.Layer):
+    def __init__(self, n_channels):
+        super(Permute, self).__init__()
+        self.n_channels = n_channels
+    
+    def build(self, input_shape):
+        channel_in = tf.TensorShape(input_shape)[-1]
+        permutation = np.arange(channel_in, dtype='int')
+        np.random.shuffle(permutation)
+        permutation_inv = np.zeros(channel_in, dtype='int')
+        permutation_inv[permutation] = np.arange(channel_in, dtype='int')
+        self.permutation = tf.constant(value=permutation, dtype=tf.int32)
+        self.permutation_inv = tf.constant(value=permutation_inv, dtype=tf.int32)
+        self.built = True
+
+    def call(self, x, rev=False):
+        if not rev:
+            x = x[..., self.permutation]
+        else:
+            x = x[..., self.permutation_inv]
+        return x
+
+    def jacobian(self, x, rev=False):
+        return 0
+
+
+class IntDiscreteNet(keras.Model):
+    def __init__(self, blk_type, num_filters, \
+                downsample_type, n_level, n_flows):
+        super(IntDiscreteNet, self).__init__()
+        self.num_filters = num_filters
+        self.func = DenseBlock if blk_type == 'dense' else SeqBlock
+        self.channel_split_ratio = 3
+        self.func_downsample = HaarDownsampling if downsample_type == 'haar' \
+                else SqueezeDownsampling
+        self.n_level = n_level
+        self.n_flows = n_flows
+    
+    def build(self, input_shape):
+        input_shape = tf.TensorShape(input_shape)
+        h_in, w_in, channel_in = input_shape[1:]
+        self.operations = []
+        self.operations.append(self.func_downsample)
+        h_in, w_in, channel_in = h_in // 2, w_in // 2, channel_in * 4
+
+        for level in range(self.n_level):
+            for _ in range(self.n_flows):
+                self.operations.append(Permute(channel_in))
+                self.operations.append(IntInvBlock(self.func, 
+                                               self.channel_split_ratio, 
+                                               num_filters=self.num_filters))
+                if level < self.n_level - 1:
+                    self.operations.append(self.func_downsample())
+                    h_in, w_in, channel_in = h_in // 2, w_in // 2, channel_in * 4
+        self.built = True
+    
+    def call(self, x, rev=False):
+        out = []
+        jacobian = 0
+        if not rev:
+            xx = x[-1]
+            for i in range(len(self.operations)):
+                xx = self.operations[i](xx, rev)
+                jacobian += self.operations[i].jacobian(xx, rev)
+        else:
+            if x[-2].get_shape()[-1] != 1:
+                xx = tf.concat([x[-1], x[-2]], axis=-1)
+            for i in reversed(range(len(self.operations))):
+                xx = self.operations[i](xx, rev)
+                jacobian += self.operations[i].jacobian(xx, rev)
+        out.append(xx)
+        return out, jacobian
 
 
 class InvCompressionNet(keras.Model):
