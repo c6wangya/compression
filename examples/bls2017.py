@@ -820,12 +820,9 @@ def int_train(args):
             
             # y hat
             y_val = tf.slice(out, [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
-            if args.y_scale_up:
-                y_val *= 255
-            y_val_hat, _ = entropy_bottleneck(y_val, training=False)
+            y_val_hat, _ = entropy_bottleneck(y_val * (255 if args.y_scale_up else 1), training=False)
             if args.y_scale_up:
                 y_val_hat /= 255
-
             # compute bpp
             string = entropy_bottleneck.compress(y_val)
             val_num_pixels = 1 * 512 ** 2
