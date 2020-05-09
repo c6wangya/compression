@@ -30,6 +30,40 @@ def ema_var(var, ema):
     return ema.average(var)
 
 
+@tf.custom_gradient
+def differentiable_round(x):
+    """ customized differentiable round operation"""
+    def grad(dy):
+        return dy
+    return tf.round(x), grad
+
+
+@tf.custom_gradient
+def differentiable_quant(x, n_bins=255):
+    """ customized differentiable round operation"""
+    def grad(dy):
+        return dy
+    # x is a float 
+    out = tf.cast(tf.round(x * n_bins), tf.float32) / n_bins
+    return out, grad
+
+
+@tf.custom_gradient
+def differentiable_cast_to_float(x):
+    """ customized differentiable round operation"""
+    def grad(dy):
+        return dy
+    return tf.cast(x, tf.float32), grad
+
+
+@tf.custom_gradient
+def differentiable_cast_to_int(x):
+    """ customized differentiable round operation"""
+    def grad(dy):
+        return dy
+    return tf.cast(x, tf.int32), grad
+
+
 class AnalysisTransform(keras.layers.Layer):
     """The analysis transform."""
 
@@ -91,7 +125,7 @@ class SynthesisTransform(keras.layers.Layer):
 
 
 class SeqBlock(keras.layers.Layer):
-    def __init__(self, num_filters, channel_out, kernel_size, residual, nin, norm="bn", an_ratio=1, *args, **kwargs):
+    def __init__(self, num_filters, channel_out, kernel_size=3, residual=False, nin=True, norm="bn", an_ratio=1, *args, **kwargs):
         super(SeqBlock, self).__init__(*args, **kwargs)
         self.residual = residual
         self.nin = nin
@@ -152,59 +186,179 @@ class SeqBlock(keras.layers.Layer):
         return out
 
 
-class DenseBlock(keras.layers.Layer):
-    def __init__(self, channel_out, gc=8, *args, **kwargs):
-        super(DenseBlock, self).__init__(*args, **kwargs)
-        self.conv1 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5), 
-            padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
-        self.conv2 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5),
-            padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
-        self.conv3 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5),
-            padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
-        self.conv4 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5),
-            padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
-        self.conv5 = keras.layers.Conv2D(filters=channel_out, kernel_size=(5, 5),
-            padding='same', data_format='channels_last', kernel_initializer='zeros')
-        self.lrelu = keras.layers.LeakyReLU(0.2)
+# class DenseBlock(keras.layers.Layer):
+#     def __init__(self, channel_out, gc=8, *args, **kwargs):
+#         super(DenseBlock, self).__init__(*args, **kwargs)
+#         self.conv1 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5), 
+#             padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
+#         self.conv2 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5),
+#             padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
+#         self.conv3 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5),
+#             padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
+#         self.conv4 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5),
+#             padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
+#         self.conv5 = keras.layers.Conv2D(filters=channel_out, kernel_size=(5, 5),
+#             padding='same', data_format='channels_last', kernel_initializer='zeros')
+#         self.lrelu = keras.layers.LeakyReLU(0.2)
+
+#     def call(self, x):
+#         x1 = self.conv1(x)
+#         x1 = self.lrelu(x1)
+#         # x1 = self.lrelu(self.conv1(x))
+#         x2 = self.lrelu(self.conv2(tf.concat([x, x1], -1)))
+#         x3 = self.lrelu(self.conv3(tf.concat([x, x1, x2], -1)))
+#         x4 = self.lrelu(self.conv4(tf.concat([x, x1, x2, x3], -1)))
+#         x5 = self.conv5(tf.concat([x, x1, x2, x3, x4], -1))
+#         return x5
+
+
+class DenseLayer(keras.layers.Layer):
+    def __init__(self, channel_out, activation):
+        super(DenseLayer, self).__init__()
+        self.channel_out = channel_out
+        self.activation = activation
+
+    def build(self, input_shape):
+        super(DenseLayer, self).build(input_shape)
+        input_shape = tf.TensorShape(input_shape)
+        last_dim = input_shape[-1]
+        self.model = keras.Sequential
+        (
+            [
+                keras.layers.Conv2D(filters=last_dim, kernel_size=(1, 1),
+                        padding='same', data_format='channels_last', 
+                        kernel_initializer='glorot_normal'), 
+                self.activation(), 
+                keras.layers.Conv2D(filters=self.channel_out, kernel_size=(3, 3),
+                        padding='same', data_format='channels_last', 
+                        kernel_initializer='glorot_normal'),
+                self.activation()
+            ]
+        )
+        # self.built = True
 
     def call(self, x):
-        x1 = self.conv1(x)
-        x1 = self.lrelu(x1)
-        # x1 = self.lrelu(self.conv1(x))
-        x2 = self.lrelu(self.conv2(tf.concat([x, x1], -1)))
-        x3 = self.lrelu(self.conv3(tf.concat([x, x1, x2], -1)))
-        x4 = self.lrelu(self.conv4(tf.concat([x, x1, x2, x3], -1)))
-        x5 = self.conv5(tf.concat([x, x1, x2, x3, x4], -1))
-        return x5
+        h = self.model(x)
+        return tf.concat([x, h], axis=-1)
+
+class DenseBlock(keras.layers.Layer):
+    def __init__(self, channel_out, depth=12, activation=keras.layers.LeakyReLU):
+        super(DenseBlock, self).__init__()
+        self.channel_out = channel_out
+        self.depth = depth
+        self.activation = activation
+        
+    def build(self, input_shape):
+        super(DenseBlock, self).build(input_shape)
+        input_shape = tf.TensorShape(input_shape)
+        channel_cur = input_shape[-1]
+        future_growth = self.channel_out - channel_cur
+        self.model = keras.Sequential()
+        for d in range(self.depth):
+            growth = future_growth // (self.depth - d)
+            self.model.add(DenseLayer(growth, self.activation))
+            channel_cur += growth
+            future_growth -= growth
+        # self.built = True
+        
+    def call(self, x):
+        return self.model(x)
+
+
+class IntInvBlock(keras.layers.Layer):
+    def __init__(self, func, channel_split_ratio, num_filters=128, 
+                 clamp=1., kernel_size=3, residual=False, nin=True, 
+                 norm='bn', n_ops=3):
+        super(IntInvBlock, self).__init__()
+        self.func = func
+        self.channel_split_ratio = channel_split_ratio
+        self.num_filters = num_filters
+    
+    def build(self, input_shape):
+        super(IntInvBlock, self).build(input_shape)
+        input_shape = tf.TensorShape(input_shape)
+        last_dim = input_shape[-1]
+        # print(last_dim)
+        self.split_len1 = last_dim // self.channel_split_ratio
+        self.split_len2 = last_dim - self.split_len1
+        if isinstance(self.func, DenseBlock):
+            self.F = DenseBlock(self.split_len1)
+            self.G = DenseBlock(self.split_len2)
+        else:
+            self.F = SeqBlock(self.num_filters, self.split_len1)
+            self.G = SeqBlock(self.num_filters, self.split_len2)
+        # self.built = True
+
+    def call(self, x, rev=False):
+        x1 = x[:, :, :, :self.split_len1]
+        x2 = x[:, :, :, self.split_len1:]
+        if not rev:
+            y1 = x1 + differentiable_quant(self.F(x2))
+            y2 = x2 + differentiable_quant(self.G(y1))
+            # y1 = x1 + differentiable_cast_to_int(
+            #                 differentiable_round(
+            #                     self.F(
+            #                         differentiable_cast_to_float(x2))))
+            # y2 = x2 + differentiable_cast_to_int(
+            #                 differentiable_round(
+            #                     self.G(
+            #                         differentiable_cast_to_float(y1))))
+        else:
+            y2 = x2 - differentiable_quant(self.G(x1))
+            y1 = x1 - differentiable_quant(self.F(y2))
+            # y2 = x2 - differentiable_cast_to_int(
+            #                 differentiable_round(
+            #                     self.G(
+            #                         differentiable_cast_to_float(x1))))
+            # y1 = x1 - differentiable_cast_to_int(
+            #                 differentiable_round(
+            #                     self.F(
+            #                         differentiable_cast_to_float(y2))))
+        return tf.concat([y1, y2], -1)
+
+    def jacobian(self, x, rev=False):
+        return 0.
 
 
 class InvBlockExp(keras.layers.Layer):
-    def __init__(self, channel_num, channel_split_num, blk_type='dense', num_filters=128, 
-                clamp=1., kernel_size=3, residual=False, nin=True, norm='bn', n_ops=3):
+    def __init__(self, func, channel_split_ratio, num_filters=128, 
+                 clamp=1., kernel_size=3, residual=False, nin=True, 
+                 norm='bn', n_ops=3):
         super(InvBlockExp, self).__init__()
-
-        self.split_len1 = channel_split_num
-        self.split_len2 = channel_num - channel_split_num
-        self.n_ops = n_ops
-        print("split_len1: {} and split_len2: {}".format(self.split_len1, self.split_len2))
-
+        # assert isinstance(func, (DenseBlock, SeqBlock))
+        self.func = func
+        self.channel_split_ratio = channel_split_ratio
+        self.num_filters = num_filters
         self.clamp = clamp
+        self.kernel_size = kernel_size
+        self.residual = residual
+        self.nin = nin
+        self.norm = norm
+        self.n_ops = n_ops
 
-        assert blk_type == 'dense' or blk_type == 'seq'
-        assert n_ops == 3 or n_ops == 4
-
-        if blk_type == 'dense':
+    def build(self, input_shape):
+        super(InvBlockExp, self).build(input_shape)
+        input_shape = tf.TensorShape(input_shape)
+        last_dim = input_shape[-1]
+        self.split_len1 = last_dim // self.channel_split_ratio
+        self.split_len2 = last_dim - self.split_len1
+        if isinstance(self.func, DenseBlock):
             self.F = DenseBlock(self.split_len1)
             self.G = DenseBlock(self.split_len2)
             self.H = DenseBlock(self.split_len2)
-            if n_ops == 4:
+            if self.n_ops == 4:
                 self.I = DenseBlock(self.split_len1)
         else:
-            self.F = SeqBlock(num_filters, self.split_len1, kernel_size, residual=residual, nin=nin, norm=norm)
-            self.G = SeqBlock(num_filters, self.split_len2, kernel_size, residual=residual, nin=nin, norm=norm)
-            self.H = SeqBlock(num_filters, self.split_len2, kernel_size, residual=residual, nin=nin, norm=norm)
-            if n_ops == 4:
-                self.I = SeqBlock(num_filters, self.split_len1, kernel_size, residual=residual, nin=nin, norm=norm)
+            self.F = SeqBlock(self.num_filters, self.split_len1, self.kernel_size, 
+                              residual=self.residual, nin=self.nin, norm=self.norm)
+            self.G = SeqBlock(self.num_filters, self.split_len2, self.kernel_size, 
+                              residual=self.residual, nin=self.nin, norm=self.norm)
+            self.H = SeqBlock(self.num_filters, self.split_len2, self.kernel_size, 
+                              residual=self.residual, nin=self.nin, norm=self.norm)
+            if self.n_ops == 4:
+                self.I = SeqBlock(self.num_filters, self.split_len1, self.kernel_size, 
+                                  residual=self.residual, nin=self.nin, norm=self.norm)
+        # self.built = True
 
     def call(self, x, rev=False):
         # x1, x2 = (x.narrow(1, 0, self.split_len1), x.narrow(1, self.split_len1, self.split_len2))
@@ -241,11 +395,17 @@ class InvBlockExp(keras.layers.Layer):
 
         return jac / 8
 
-class HaarDownsampling(keras.layers.Layer):
-    def __init__(self, channel_in, *args, **kwargs):
-        super(HaarDownsampling, self).__init__(*args, **kwargs)
-        self.channel_in = channel_in
 
+class HaarDownsampling(keras.layers.Layer):
+
+    def __init__(self, *args, **kwargs):
+        super(HaarDownsampling, self).__init__(*args, **kwargs)
+        self.last_jac = 0
+
+    def build(self, input_shape):
+        super(HaarDownsampling, self).build(input_shape)
+        input_shape = tf.TensorShape(input_shape)
+        self.channel_in = input_shape[-1]
         # self.haar_weights = np.ones([4, 1, 2, 2])
         self.haar_weights = np.ones([2, 2, 1, 4])
         self.haar_weights[1, 0, 0, 1] = -1
@@ -262,6 +422,7 @@ class HaarDownsampling(keras.layers.Layer):
         self.conv_transpose = keras.layers.Conv2DTranspose(filters=1, kernel_size=2, 
                     strides=2, padding='valid', kernel_initializer=self.haar_weights, 
                     use_bias=False, trainable=False)
+        # self.built = True
 
     def call(self, x, rev=False):
         self.x_shape = x.get_shape().as_list()[1:]
@@ -335,11 +496,108 @@ class InvConv(keras.layers.Layer):
                 tf.cast(self.w, 'float64')))), 'float32') * H * W
         return tf.reduce_mean(jac)
 
+class Permute(keras.layers.Layer):
+    def __init__(self, n_channels=-1):
+        super(Permute, self).__init__()
+        self.n_channels = n_channels
+
+    def compute_output_shape(self, input_shape):
+        print("custom compute_output_shape called")
+        shape = list(input_shape)
+        shape[-1] *= 1
+        return tuple(shape)
+    
+    def build(self, input_shape):
+        super(Permute, self).build(input_shape)
+        input_shape = tf.TensorShape(input_shape)
+        # print('Permute input shape: {}'.format(input_shape))
+        channel_in = input_shape[-1]
+        # assert isinstance(channel_in, int), "channel: {}".format(channel_in) 
+        permutation = tf.range(channel_in)
+        permutation = tf.random.shuffle(permutation)
+        # permutation = np.arange(channel_in, dtype='int')
+        # np.random.shuffle(permutation)
+        permutation_inv = tf.range(channel_in)
+        a = tf.concat([tf.expand_dims(p, -1) for p in [permutation, permutation_inv]], axis=-1)
+        b = tf.add(tf.slice(a, [0, 0], [-1, 1]) * 10, tf.slice(a, [0, 1], [-1, 1]))
+        reordered = tf.gather(a, tf.nn.top_k(b[:, 0], k=channel_in, sorted=False).indices)
+        reordered = tf.reverse(reordered, axis=[0])
+        permutation_inv = tf.squeeze(tf.slice(reordered, [0, 1], [-1, -1]))
+        # permutation_inv = np.zeros(channel_in, dtype='int')
+        # permutation_inv[permutation] = np.arange(channel_in, dtype='int')
+        self.permutation = tf.constant(value=permutation, dtype=tf.int32)
+        self.permutation_inv = tf.constant(value=permutation_inv, dtype=tf.int32)
+        # self.built = True
+
+    def call(self, x, rev=False):
+        if not rev:
+            x = tf.transpose(x, [3, 0, 1, 2])
+            x = tf.gather(x, self.permutation)
+            x = tf.transpose(x, [1, 2, 3, 0])
+            # x = x[..., self.permutation]
+        else:
+            x = tf.transpose(x, [3, 0, 1, 2])
+            x = tf.gather(x, self.permutation_inv)
+            x = tf.transpose(x, [1, 2, 3, 0])
+            # x = x[..., self.permutation_inv]
+        return x
+
+    def jacobian(self, x, rev=False):
+        return 0
+
+
+class IntDiscreteNet(keras.layers.Layer):
+    def __init__(self, blk_type, num_filters, \
+                downsample_type, n_levels, n_flows):
+        super(IntDiscreteNet, self).__init__()
+        self.num_filters = num_filters
+        self.func = DenseBlock if blk_type == 'dense' else SeqBlock
+        self.channel_split_ratio = 2
+        self.func_downsample = HaarDownsampling if downsample_type == 'haar' \
+                else SqueezeDownsampling
+        self.n_levels = n_levels
+        self.n_flows = n_flows
+        self.operations = []
+        self.num_ops = 0
+    
+    def build(self, input_shape):
+        super(IntDiscreteNet, self).build(input_shape)
+        input_shape = tf.TensorShape(input_shape)
+        h_in, w_in, channel_in = input_shape[1:]
+        self.operations.append(self.func_downsample())
+        self.num_ops += 1
+        h_in, w_in, channel_in = h_in // 2, w_in // 2, channel_in * 4
+
+        for level in range(self.n_levels):
+            for _ in range(self.n_flows):
+                # self.operations.append(Permute())
+                self.operations.append(IntInvBlock(self.func, 
+                                            self.channel_split_ratio, 
+                                            num_filters=self.num_filters))
+                self.num_ops += 1
+            if level < self.n_levels - 1:
+                self.operations.append(self.func_downsample())
+                self.num_ops += 1
+                h_in, w_in, channel_in = h_in // 2, w_in // 2, channel_in * 4
+        self.built = True
+    
+    def call(self, x, rev=False):
+        jacobian = 0
+        if not rev:
+            for i in range(self.num_ops):
+                x = self.operations[i](x, rev)
+                # jacobian += self.operations[i].jacobian(x, rev)
+        else:
+            for i in reversed(range(self.num_ops)):
+                x = self.operations[i](x, rev)
+                # jacobian += self.operations[i].jacobian(x, rev)
+        return x, jacobian
+
 
 class InvCompressionNet(keras.Model):
     def __init__(self, channel_in, channel_out, blk_type, num_filters, \
                 kernel_size, residual, nin, norm, n_ops, downsample_type, \
-                inv_conv, use_norm=False):
+                inv_conv, use_norm=False, int_flow=False):
         super(InvCompressionNet, self).__init__()
         assert downsample_type == "haar" or downsample_type == "squeeze"
         # self.upscale_log = upscale_log
@@ -361,6 +619,8 @@ class InvCompressionNet(keras.Model):
 
             return n_filters
 
+        self.coupling_layer = InvBlockExp if not int_flow else IntInvBlock
+        self.func = DenseBlock if blk_type == 'dense' else SeqBlock
         current_channel = self.channel_in
         for _ in range(2):
             if downsample_type == "haar":
@@ -372,10 +632,10 @@ class InvCompressionNet(keras.Model):
             self.operations.append(InvConv(current_channel))
             if use_norm:
                 self.operations.append(MultiActNorm(split_ratio=3))
-        self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
-                        blk_type, num_filters=compute_n_filters(current_channel), 
-                        kernel_size=kernel_size, residual=residual, nin=nin, norm=norm, n_ops=n_ops))
-
+        self.operations.append(self.coupling_layer(self.func, 3, 
+                        num_filters=compute_n_filters(current_channel), 
+                        kernel_size=kernel_size, residual=residual, nin=nin, 
+                        norm=norm, n_ops=n_ops))
         if downsample_type == "haar":
             self.operations.append(HaarDownsampling(current_channel))
         else:
@@ -385,10 +645,10 @@ class InvCompressionNet(keras.Model):
             self.operations.append(InvConv(current_channel))
             if use_norm:
                 self.operations.append(MultiActNorm(split_ratio=3))
-        self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
-                        blk_type, num_filters=compute_n_filters(current_channel), 
-                        kernel_size=kernel_size, residual=residual, nin=nin, norm=norm, n_ops=n_ops))
-
+        self.operations.append(self.coupling_layer(self.func, 3, 
+                        num_filters=compute_n_filters(current_channel), 
+                        kernel_size=kernel_size, residual=residual, nin=nin, 
+                        norm=norm, n_ops=n_ops))
         if downsample_type == "haar":
             self.operations.append(HaarDownsampling(current_channel))
         else:
@@ -398,9 +658,10 @@ class InvCompressionNet(keras.Model):
             self.operations.append(InvConv(current_channel))
             if use_norm:
                 self.operations.append(MultiActNorm(split_ratio=3))
-        self.operations.append(InvBlockExp(current_channel, current_channel // 3, 
-                        blk_type, num_filters=compute_n_filters(current_channel), 
-                        kernel_size=kernel_size, residual=residual, nin=nin, norm=norm, n_ops=n_ops))
+        self.operations.append(self.coupling_layer(self.func, 3, 
+                        num_filters=compute_n_filters(current_channel), 
+                        kernel_size=kernel_size, residual=residual, nin=nin, 
+                        norm=norm, n_ops=n_ops))
         
     def call(self, x, rev=False):
         out = []
@@ -620,7 +881,8 @@ class SqueezeDownsampling(keras.layers.Layer):
         n_channels = int(shape[3])
 
         if not rev:
-            assert height % self.factor == 0 and width % self.factor == 0
+            assert height % self.factor == 0 and width % self.factor == 0, \
+                    "H: {}, W: {}".format(height, width)
             x = tf.reshape(x, [-1, height//self.factor, self.factor,
                             width//self.factor, self.factor, n_channels])
             x = tf.transpose(x, [0, 1, 3, 5, 2, 4])
@@ -638,8 +900,19 @@ class SqueezeDownsampling(keras.layers.Layer):
     def jacobian(self, x, rev=False):
         return 0
 
+# def space_to_depth(x):
+#     xs = x.size()
+#     # Pick off every second element
+#     x = x.view(xs[0], xs[1], xs[2] // 2, 2, xs[3] // 2, 2)
+#     # Transpose picked elements next to channels.
+#     x = x.permute((0, 1, 3, 5, 2, 4)).contiguous()
+#     # Combine with channels.
+#     x = x.view(xs[0], xs[1] * 4, xs[2] // 2, xs[3] // 2)
+#     return x
 
-class ActNorm(tf.keras.layers.Layer):
+
+
+class ActNorm(keras.layers.Layer):
     """Actnorm, an affine reversible layer (Prafulla and Kingma, 2018).
     Weights use data-dependent initialization in which outputs have zero mean
     and unit variance per channel (last dimension). The mean/variance statistics
@@ -647,7 +920,7 @@ class ActNorm(tf.keras.layers.Layer):
     """
 
     def __init__(self, 
-                 epsilon=tf.keras.backend.epsilon(), 
+                 epsilon=keras.backend.epsilon(), 
                  ema=None, 
                  **kwargs):
         super(ActNorm, self).__init__(**kwargs)
@@ -655,6 +928,7 @@ class ActNorm(tf.keras.layers.Layer):
         self.ema = ema
 
     def build(self, input_shape):
+        super(ActNorm, self).build(input_shape)
         input_shape = tf.TensorShape(input_shape)
         last_dim = input_shape[-1]
         if last_dim is None:
@@ -669,7 +943,7 @@ class ActNorm(tf.keras.layers.Layer):
         log_scale = log_scale.assign(self.log_scale_initial_value)
         with tf.control_dependencies([log_scale]):
             self.log_scale = log_scale
-        self.built = True
+        # self.built = True
 
     def __call__(self, inputs, *args, **kwargs):
         if not self.built:
