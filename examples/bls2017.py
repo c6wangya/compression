@@ -908,13 +908,16 @@ def int_train(args):
             tf.summary.scalar("validation-y-z-rgb-psnr", val_y_z_rgb_psnr)
             tf.summary.scalar("validation-y-z-luma-psnr", val_y_z_luma_psnr)
             tf.summary.scalar("validation-bpp", val_bpp)
-            tf.summary.scalar("baseline-validation-bpp", base_val_bpp)
+            if args.guidance_type == "baseline":
+                tf.summary.scalar("baseline-validation-bpp", base_val_bpp)
             # group operations
             val_op_lst = [val_y_hat_z_0_rgb_psnr, val_y_hat_z_0_luma_psnr, 
                         val_y_z_0_rgb_psnr, val_y_z_0_luma_psnr, 
                         val_y_z_rgb_psnr, val_y_z_luma_psnr]
                     #   val_bpp]
-            val_bpp_op_list = [val_bpp, base_val_bpp]
+            val_bpp_op_list = [val_bpp]
+            if args.guidance_type == "baseline":
+                val_bpp_op_list.append(base_val_bpp)
             val_op = tf.group(*val_op_lst)
             val_bpp_op = tf.group(*val_bpp_op_list)
 
