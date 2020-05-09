@@ -77,6 +77,14 @@ def read_png(filename):
     image /= 255
     return image
 
+def read_int_png(filename):
+    """Loads a PNG image file."""
+    string = tf.read_file(filename)
+    # print(" file name: {}".format(filename))
+    image = tf.image.decode_image(string, channels=3)
+    image = tf.cast(image, tf.float32)
+    return image
+
 
 def quantize_image(image):
     image = tf.round(image * 255)
@@ -272,12 +280,17 @@ def train(args):
             synthesis_transform=m.SynthesisTransform(args.num_filters)
         else:
             # inv train net
-            inv_transform = m.InvCompressionNet(channel_in=3, channel_out=args.channel_out, 
-                    blk_type=args.blk_type, num_filters=args.num_filters,
-                    kernel_size=args.kernel_size, residual=args.residual, 
-                    nin=args.nin, norm=args.norm, n_ops=args.n_ops, 
-                    downsample_type=args.downsample_type, inv_conv=(not args.non1x1), 
-                    use_norm=args.use_norm, int_flow=args.int_flow)
+            if args.int_discrete_net:
+                inv_transform = m.IntDiscreteNet(blk_type=args.blk_type, 
+                        num_filters=args.num_filters, downsample_type=args.downsample_type, 
+                        n_levels=args.n_levels, n_flows=args.n_flows)
+            else:
+                inv_transform = m.InvCompressionNet(channel_in=3, channel_out=args.channel_out, 
+                        blk_type=args.blk_type, num_filters=args.num_filters,
+                        kernel_size=args.kernel_size, residual=args.residual, 
+                        nin=args.nin, norm=args.norm, n_ops=args.n_ops, 
+                        downsample_type=args.downsample_type, inv_conv=(not args.non1x1), 
+                        use_norm=args.use_norm, int_flow=args.int_flow)
             if args.guidance_type == "baseline_pretrain":
                 analysis_transform = m.AnalysisTransform(args.channel_out[0])
                 synthesis_transform = m.SynthesisTransform(args.channel_out[0])
@@ -318,17 +331,19 @@ def train(args):
             if args.guidance_type == "baseline":
                 y_base = analysis_transform(x)
                 if args.prepos_ste: 
-                    y_base = m.differentiable_round(y_base)
+                    y_base = m.differentiable_quant(y_base)
             # # place holder for init bool
             # init = tf.placeholder(tf.bool, (), 'init')
             # x = print_act_stats(x, "x")
-            out, train_jac = inv_transform([x])
+            out, train_jac = inv_transform(x)
+            if not args.int_discrete_net:
+                out = out[-1]
             zshapes = []
             
-            if out[-1].get_shape()[-1] == args.channel_out[-1]:
-                z = out[-1][:, :, :, args.channel_out[-1] - 1:]
+            if out.get_shape()[-1] == args.channel_out[-1]:
+                z = out[:, :, :, args.channel_out[-1] - 1:]
             else:
-                z = out[-1][:, :, :, args.channel_out[-1]:]
+                z = out[:, :, :, args.channel_out[-1]:]
             print(z.get_shape())
             # z = print_act_stats(z, "z_{}".format(i))
             zshapes.append(tf.shape(z))
@@ -338,14 +353,14 @@ def train(args):
             if args.train_jacobian:
                 train_flow /= -np.log(2) * num_pixels
             
-            y = tf.slice(out[-1], [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
+            y = tf.slice(out, [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
             if args.guidance_type == "norm": 
                 train_y_guidance = tf.reduce_sum(tf.norm(y - 0.5, ord=2, axis=-1, name="guidance_norm"))
             if args.clamp:
                 y = tf.clip_by_value(y, 0, 1)
             
             if args.prepos_ste:
-                y = m.differentiable_round(y)
+                y = m.differentiable_quant(y)
             
             if args.no_aux and args.guidance_type == "baseline":
                 y_tilde, likelihoods = entropy_bottleneck(tf.stop_gradient(y_base), training=True)
@@ -356,38 +371,41 @@ def train(args):
                 y_tilde, likelihoods = entropy_bottleneck(y, training=True)
 
             input_rev = []
+            if args.ste or args.prepos_ste:
+                y_tilde = m.differentiable_quant(y_tilde)
+            input_rev.append(y_tilde)
             for zshape in zshapes:
                 if args.zero_z:
                     input_rev.append(tf.zeros(shape=zshape))
                 else:
                     input_rev.append(tf.random_normal(shape=zshape))
-            
-            if args.ste or args.prepos_ste:
-                y_tilde = m.differentiable_round(y_tilde)
-            input_rev.append(y_tilde)
+            input_rev = tf.concat(input_rev, axis=-1)
             x_tilde, _ = inv_transform(input_rev, rev=True)
-            x_tilde = x_tilde[-1]
+            if not args.int_discrete_net:
+                x_tilde = x_tilde[-1]
             flow_loss_weight = args.flow_loss_weight
 
             # validation 
             if args.val_gap != 0:
                 # baseline y
                 if args.no_aux and args.guidance_type == "baseline":
-                    y_val_base = analysis_transform()
-                out, _ = inv_transform([x_val])
+                    y_val_base = analysis_transform([x])
+                out, _ = inv_transform(x_val)
+                if not args.int_discrete_net:
+                    out = out[-1]
                 
                 # z_samples and z_zeros
                 zshapes = []
-                if out[-1].get_shape()[-1] == args.channel_out[-1]:
-                    z = out[-1][:, :, :, args.channel_out[-1] - 1:]
+                if out.get_shape()[-1] == args.channel_out[-1]:
+                    z = out[:, :, :, args.channel_out[-1] - 1:]
                 else:
-                    z = out[-1][:, :, :, args.channel_out[-1]:]
+                    z = out[:, :, :, args.channel_out[-1]:]
                 zshapes.append(tf.shape(z))
                 z_samples = [tf.random_normal(shape=zshape) for zshape in zshapes]
                 z_zeros = [tf.zeros(shape=zshape) for zshape in zshapes]
                 
                 # y hat
-                y_val = tf.slice(out[-1], [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
+                y_val = tf.slice(out, [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
                 if args.clamp: 
                     y_val = tf.clip_by_value(y_val, 0, 1)
                 y_val_hat, _ = entropy_bottleneck(y_val, training=False)
@@ -398,21 +416,23 @@ def train(args):
                 string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
                 val_bpp = tf.math.divide(string_len * 8, val_num_pixels)
                 # y^, z^
-                x_val_y_hat_z_hat, _ = inv_transform(z_samples + [y_val_hat], rev=True)
+                x_val_y_hat_z_hat, _ = inv_transform(tf.concat([y_val_hat] + z_samples, axis=-1), rev=True)
                 # y^, 0
-                x_val_y_hat_z_0, _ = inv_transform(z_zeros + [y_val_hat], rev=True)
+                x_val_y_hat_z_0, _ = inv_transform(tf.concat([y_val_hat] + z_zeros, axis=-1), rev=True)
                 # y, z^
-                x_val_y_z_hat, _ = inv_transform(z_samples + [y_val], rev=True)
+                x_val_y_z_hat, _ = inv_transform(tf.concat([y_val] + z_samples, axis=-1), rev=True)
                 # y, 0
-                x_val_y_z_0, _ = inv_transform(z_zeros + [y_val], rev=True)
+                x_val_y_z_0, _ = inv_transform(tf.concat([y_val] + z_zeros, axis=-1), rev=True)
+                # y, z
+                x_val_y_z, _ = inv_transform(tf.concat([y_val] + [z], axis=-1), rev=True)
 
                 # baseline y hat & x hat with y base
                 if args.no_aux and args.guidance_type == "baseline":
                     y_base_val_hat, _ = entropy_bottleneck(y_val_base, training=False)
                     # y base^, z^
-                    x_val_y_base_hat_z_hat, _ = inv_transform(z_samples + [y_base_val_hat], rev=True)
+                    x_val_y_base_hat_z_hat, _ = inv_transform(tf.concat([y_base_val_hat] + z_samples, axis=-1), rev=True)
                     # y base^, 0
-                    x_val_y_base_hat_z_0, _ = inv_transform(z_zeros + [y_base_val_hat], rev=True)
+                    x_val_y_base_hat_z_0, _ = inv_transform(tf.concat([y_base_val_hat] + z_zeros, axis=-1), rev=True)
                     string_base = entropy_bottleneck.compress(y_val_base)
                     string_base_len = tf.cast(tf.strings.length(string_base), dtype=tf.float32)
                     string_base_len = tf.reduce_sum(string_base_len)
@@ -506,7 +526,9 @@ def train(args):
                 img_hat=tf.round(img_hat * 255)
                 # img = tf.squeeze(img)
                 # img_hat = tf.squeeze(img_hat[-1])
-                if args.command == "inv_train" and args.guidance_type != "baseline_pretrain":
+                if args.command == "inv_train" and \
+                        args.guidance_type != "baseline_pretrain" and \
+                        not args.int_discrete_net:
                     img_hat = img_hat[-1]
                 rgb_psnr = tf.squeeze(tf.reduce_mean(tf.image.psnr(img_hat, img, 255)))
                 luma_img = tf.slice(tf.image.rgb_to_yuv(img), [0, 0, 0, 0], [-1, -1, -1, 1])
@@ -539,6 +561,8 @@ def train(args):
                 val_y_z_hat_rgb_psnr, val_y_z_hat_luma_psnr = comp_psnr(x_val_y_z_hat, x_val)
                 # y, 0
                 val_y_z_0_rgb_psnr, val_y_z_0_luma_psnr = comp_psnr(x_val_y_z_0, x_val)
+                # y, z
+                val_y_z_rgb_psnr, val_y_z_luma_psnr = comp_psnr(x_val_y_z, x_val)
                 # summary
                 tf.summary.scalar("validation-yhat-zhat-rgb-psnr", val_y_hat_z_hat_rgb_psnr)
                 tf.summary.scalar("validation-yhat-zhat-luma-psnr", val_y_hat_z_hat_luma_psnr)
@@ -548,12 +572,15 @@ def train(args):
                 tf.summary.scalar("validation-y-zhat-luma-psnr", val_y_z_hat_luma_psnr)
                 tf.summary.scalar("validation-y-z0-rgb-psnr", val_y_z_0_rgb_psnr)
                 tf.summary.scalar("validation-y-z0-luma-psnr", val_y_z_0_luma_psnr)
+                tf.summary.scalar("validation-y-z-rgb-psnr", val_y_z_rgb_psnr)
+                tf.summary.scalar("validation-y-z-luma-psnr", val_y_z_luma_psnr)
                 tf.summary.scalar("validation-bpp", val_bpp)
                 # group operations
                 val_op_lst = [val_y_hat_z_hat_rgb_psnr, val_y_hat_z_hat_luma_psnr, 
                           val_y_hat_z_0_rgb_psnr, val_y_hat_z_0_luma_psnr, 
                           val_y_z_hat_rgb_psnr, val_y_z_hat_luma_psnr, 
-                          val_y_z_0_rgb_psnr, val_y_z_0_luma_psnr]
+                          val_y_z_0_rgb_psnr, val_y_z_0_luma_psnr, 
+                          val_y_z_rgb_psnr, val_y_z_luma_psnr]
                         #   val_bpp]
                 val_bpp_op_list = [val_bpp]
                 if args.no_aux and args.guidance_type == "baseline":
@@ -619,8 +646,8 @@ def train(args):
                 synthesis_saver = tf.train.Saver(synthesis_transform.trainable_variables, max_to_keep=1)
             elif args.guidance_type == "baseline":
                 inv_saver = tf.train.Saver(inv_transform.trainable_variables, max_to_keep=1)
-            global_iters = 0
-
+        
+        global_iters = 0
         with tf.train.MonitoredTrainingSession(
                     hooks=hooks, checkpoint_dir=args.checkpoint_dir,
                     save_checkpoint_secs=1000, save_summaries_secs=300) as sess:
@@ -679,6 +706,304 @@ def train(args):
                             save_weights(entropy_saver, get_session(sess), 
                                     args.checkpoint_dir + '/entro_net', global_iters)
                         elif args.guidance_type == "baseline":
+                            save_weights(inv_saver, get_session(sess), 
+                                    args.checkpoint_dir + '/inv_net', global_iters)
+                            save_weights(entropy_saver, get_session(sess), 
+                                    args.checkpoint_dir + '/entro_net', global_iters)
+                    global_iters += 1
+
+
+def int_train(args):
+    """Trains the model."""
+
+    os.environ["CUDA_VISIBLE_DEVICES"]="{}".format(args.gpu_device)
+
+    if args.verbose:
+        tf.logging.set_verbosity(tf.logging.INFO)
+
+    with tf.Graph().as_default() as graph:
+        # Create input data pipeline.
+        with tf.device("/cpu:0"):
+            train_files=glob.glob(args.train_glob)
+            if not train_files:
+                raise RuntimeError(
+                        "No training images found with glob '{}'.".format(args.train_glob))
+            
+            train_dataset=tf.data.Dataset.from_tensor_slices(train_files)
+            train_dataset=train_dataset.shuffle(
+                    buffer_size=len(train_files)).repeat()
+            train_dataset=train_dataset.map(
+                    read_png, num_parallel_calls=args.preprocess_threads)
+            train_dataset=train_dataset.map(
+                    lambda x: tf.random_crop(x, (int(args.patchsize), int(args.patchsize), 3)))
+            train_dataset=train_dataset.batch(args.batchsize)
+            train_dataset=train_dataset.prefetch(32)
+
+            if args.val_gap != 0:
+                tf.set_random_seed(1234)
+                val_files=glob.glob(args.val_glob)
+                if not val_files:
+                    raise RuntimeError(
+                            "No validation images found with glob '{}'.".format(args.val_glob))
+                
+                val_dataset=tf.data.Dataset.from_tensor_slices(val_files)
+                val_dataset=val_dataset.repeat()
+                val_dataset=val_dataset.map(
+                        read_png, num_parallel_calls=args.preprocess_threads)
+                val_dataset=val_dataset.map(lambda x: tf.random_crop(x, (512, 512, 3)))
+                val_dataset=val_dataset.batch(1)
+                val_dataset=val_dataset.prefetch(32)
+
+        num_pixels = args.batchsize * args.patchsize ** 2
+
+        # Get training patch from dataset.
+        x = train_dataset.make_one_shot_iterator().get_next()
+
+        # Get validation data from dataset
+        if args.val_gap != 0:
+            x_val = val_dataset.make_one_shot_iterator().get_next()
+            print(x_val)
+
+        # add uniform noise
+        if args.noise:
+            x = tf.add(x, tf.random_uniform(tf.shape(x), 0, 1.))
+
+        # Instantiate model.
+        entropy_bottleneck=tfc.EntropyBottleneck(noise=(not args.quant_grad))
+        # inv train net
+        inv_transform = m.IntDiscreteNet(blk_type=args.blk_type, 
+                num_filters=args.num_filters, downsample_type=args.downsample_type, 
+                n_levels=args.n_levels, n_flows=args.n_flows)
+        if args.guidance_type == "baseline":
+            analysis_transform = m.AnalysisTransform(args.channel_out[0])
+
+        """ 1 gpu """
+        # Transform Image
+        train_flow, train_jac = 0, 0
+        if args.guidance_type == "baseline":
+            y_base = analysis_transform(x)
+            if args.prepos_ste: 
+                y_base = m.differentiable_quant(y_base)
+        out, train_jac = inv_transform(x)
+        z = out[:, :, :, args.channel_out[-1]:]
+        # mle of flow 
+        train_flow += tf.reduce_sum(tf.norm(z + epsilon, ord=2, axis=-1, name="last_norm"))
+        if args.train_jacobian:
+            train_flow /= -np.log(2) * num_pixels
+        y = tf.slice(out, [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
+        # prepos ste
+        if args.prepos_ste:
+            y = m.differentiable_quant(y)
+        y_tilde, likelihoods = entropy_bottleneck(y, training=True)
+        if args.ste or args.prepos_ste:
+            y_tilde = m.differentiable_quant(y_tilde)
+        input_rev = [y_tilde, tf.zeros(shape=tf.shape(z))]
+        input_rev = tf.concat(input_rev, axis=-1)
+        x_tilde, _ = inv_transform(input_rev, rev=True)
+        flow_loss_weight = args.flow_loss_weight
+
+        # validation 
+        if args.val_gap != 0:
+            if args.guidance_type == "baseline":
+                base_out = analysis_transform(x_val)
+                if args.prepos_ste: 
+                    base_out = m.differentiable_quant(base_out)
+            out, _ = inv_transform(x_val)
+            
+            # z_samples and z_zeros
+            z = out[:, :, :, args.channel_out[-1]:]
+            z_zeros = tf.zeros(shape=tf.shape(z))
+            
+            # y hat
+            y_val = tf.slice(out, [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
+            y_val_hat, _ = entropy_bottleneck(y_val, training=False)
+
+            # compute bpp
+            string = entropy_bottleneck.compress(y_val)
+            val_num_pixels = 1 * 512 ** 2
+            string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
+            val_bpp = tf.math.divide(string_len, val_num_pixels)
+            if args.guidance_type == "baseline":
+                string = entropy_bottleneck.compress(base_out)
+                val_num_pixels = 1 * 512 ** 2
+                string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
+                base_val_bpp = tf.math.divide(string_len, val_num_pixels)
+            # y^, 0
+            x_val_y_hat_z_0, _ = inv_transform(tf.concat([y_val_hat, z_zeros], axis=-1), rev=True)
+            # y, 0
+            x_val_y_z_0, _ = inv_transform(tf.concat([y_val, z_zeros], axis=-1), rev=True)
+            # y, z
+            x_val_y_z, _ = inv_transform(tf.concat([y_val, z], axis=-1), rev=True)
+
+        # Total number of bits divided by number of pixels.
+        train_bpp = tf.reduce_sum(tf.log(likelihoods)) / (-np.log(2) * num_pixels)
+
+        # Mean squared error across pixels.
+        train_mse=tf.reduce_mean(tf.squared_difference(x, x_tilde))
+        # Multiply by 255^2 to correct for rescaling.
+        train_mse *= 255 ** 2
+
+        # Compute y's guidance across pixels
+        if args.guidance_type == "baseline":
+            train_y_guidance = tf.reduce_sum(tf.squared_difference(y, tf.stop_gradient(y_base)))
+        else:
+            train_y_guidance = 0
+        if not args.train_jacobian:
+            train_jac = 0
+
+        # The rate-distortion cost.
+        train_loss = args.lmbda * train_mse + \
+                    args.beta * train_bpp + \
+                    flow_loss_weight * (train_flow + train_jac) + \
+                    args.y_guidance_weight * train_y_guidance
+        
+        if "baseline" not in args.guidance_type:
+            tvars = tf.trainable_variables()
+        else:
+            tvars = inv_transform.trainable_variables + \
+                entropy_bottleneck.trainable_variables
+
+        filtered_vars = [var for var in tvars \
+                if not 'haar_downsampling' in var.name \
+                and not 'gray_scale_guidance' in var.name]
+        # Minimize loss and auxiliary loss, and execute update op.
+        main_lr = tf.placeholder(tf.float32, [], 'main_lr')
+        aux_lr = tf.placeholder(tf.float32, [], 'aux_lr')
+        step = tf.train.create_global_step()
+        main_optimizer=tf.train.AdamOptimizer(learning_rate=main_lr)
+        main_gradients, main_variables = zip(*main_optimizer.compute_gradients(train_loss, filtered_vars))
+        main_gradients = [
+            None if gradient is None else tf.clip_by_norm(gradient, args.grad_clipping)
+            for gradient in main_gradients]
+        main_step = main_optimizer.apply_gradients(zip(main_gradients, main_variables), global_step=step)
+        
+        train_op=tf.group(main_step)
+
+        if args.val_gap != 0:
+            def comp_psnr(img_hat, img):
+                img *= 255
+                img_hat=tf.clip_by_value(img_hat, 0, 1)
+                img_hat=tf.round(img_hat * 255)
+                if args.command == "inv_train" and \
+                        args.guidance_type != "baseline_pretrain" and \
+                        not args.int_discrete_net:
+                    img_hat = img_hat[-1]
+                rgb_psnr = tf.squeeze(tf.reduce_mean(tf.image.psnr(img_hat, img, 255)))
+                luma_img = tf.slice(tf.image.rgb_to_yuv(img), [0, 0, 0, 0], [-1, -1, -1, 1])
+                luma_img_hat = tf.slice(tf.image.rgb_to_yuv(img_hat), [0, 0, 0, 0], [-1, -1, -1, 1])
+                luma_psnr = tf.squeeze(tf.reduce_mean(tf.image.psnr(luma_img_hat, luma_img, 255)))
+                return rgb_psnr, luma_psnr
+            
+            # y^, 0
+            val_y_hat_z_0_rgb_psnr, val_y_hat_z_0_luma_psnr = comp_psnr(x_val_y_hat_z_0, x_val)
+            # y, 0
+            val_y_z_0_rgb_psnr, val_y_z_0_luma_psnr = comp_psnr(x_val_y_z_0, x_val)
+            # y, z
+            val_y_z_rgb_psnr, val_y_z_luma_psnr = comp_psnr(x_val_y_z, x_val)
+            # summary
+            tf.summary.scalar("validation-yhat-z0-rgb-psnr", val_y_hat_z_0_rgb_psnr)
+            tf.summary.scalar("validation-yhat-z0-luma-psnr", val_y_hat_z_0_luma_psnr)
+            tf.summary.scalar("validation-y-z0-rgb-psnr", val_y_z_0_rgb_psnr)
+            tf.summary.scalar("validation-y-z0-luma-psnr", val_y_z_0_luma_psnr)
+            tf.summary.scalar("validation-y-z-rgb-psnr", val_y_z_rgb_psnr)
+            tf.summary.scalar("validation-y-z-luma-psnr", val_y_z_luma_psnr)
+            tf.summary.scalar("validation-bpp", val_bpp)
+            tf.summary.scalar("baseline-validation-bpp", base_val_bpp)
+            # group operations
+            val_op_lst = [val_y_hat_z_0_rgb_psnr, val_y_hat_z_0_luma_psnr, 
+                        val_y_z_0_rgb_psnr, val_y_z_0_luma_psnr, 
+                        val_y_z_rgb_psnr, val_y_z_luma_psnr]
+                    #   val_bpp]
+            val_bpp_op_list = [val_bpp, base_val_bpp]
+            val_op = tf.group(*val_op_lst)
+            val_bpp_op = tf.group(*val_bpp_op_list)
+
+        tf.summary.scalar("main-learning-rates", main_lr)
+
+        tf.summary.scalar("loss", train_loss)
+        tf.summary.scalar("bpp", train_bpp)
+        tf.summary.scalar("mse", train_mse)
+
+        psnr=tf.squeeze(tf.reduce_mean(tf.image.psnr(x_tilde, x, 255)))
+        msssim=tf.squeeze(tf.reduce_mean(
+            tf.image.ssim_multiscale(x_tilde, x, 255)))
+        tf.summary.scalar("psnr", psnr)
+        tf.summary.scalar("msssim", msssim)
+
+        tf.summary.image("original", quantize_image(x))
+        tf.summary.image("reconstruction", quantize_image(x_tilde))
+        
+        # stats_graph(graph)
+
+        # total_parameters = 0
+        # for variable in tf.trainable_variables():
+        #     # shape is an array of tf.Dimension
+        #     shape = variable.get_shape()
+        #     # print(shape)
+        #     # print(len(shape))
+        #     variable_parameters = 1
+        #     for dim in shape:
+        #         # print(dim)
+        #         variable_parameters *= dim.value
+        #     # print(variable_parameters)
+        #     total_parameters += variable_parameters
+        # print("\n[network capacity] total num of parameters -> {}\n\n".format(total_parameters))
+
+        hooks=[
+                tf.train.StopAtStepHook(last_step=args.last_step),
+                tf.train.NanTensorHook(train_loss),
+                ]
+        
+        # init saver for all the models
+        if "baseline" in args.guidance_type:
+            analysis_saver = tf.train.Saver(analysis_transform.trainable_variables, max_to_keep=1)
+            entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables, max_to_keep=1)
+            if args.guidance_type == "baseline":
+                inv_saver = tf.train.Saver(inv_transform.trainable_variables, max_to_keep=1)
+        
+        global_iters = 0
+        with tf.train.MonitoredTrainingSession(
+                    hooks=hooks, checkpoint_dir=args.checkpoint_dir,
+                    save_checkpoint_secs=1000, save_summaries_secs=300) as sess:
+            if "baseline" not in args.guidance_type or args.finetune:
+                while not sess.should_stop():
+                    lr = lr_schedule(global_iters, 
+                                     args.lr_scheduler, 
+                                     args.lr_warmup_steps, 
+                                     args.lr_min_ratio, 
+                                     args.lr_decay)
+                    sess.run(train_op, {main_lr: args.main_lr * lr, 
+                                        aux_lr: args.aux_lr * lr})
+                    if args.val_gap != 0 and global_iters % args.val_gap == 0:
+                        # for i in range(24)
+                        sess.run(val_op)
+                        sess.run(val_bpp_op)
+                    global_iters += 1
+            else:
+                if args.finetune:
+                    if args.guidance_type == "baseline":
+                        # load invertible model
+                        restore_weights(inv_saver, get_session(sess), 
+                                args.pretrain_checkpoint_dir + "/inv_net")
+                if args.guidance_type == "baseline":
+                    # load analysis and entropybottleneck model
+                    restore_weights(analysis_saver, get_session(sess), 
+                            args.pretrain_checkpoint_dir + "/ana_net")
+                    restore_weights(entropy_saver, get_session(sess), 
+                            args.pretrain_checkpoint_dir + "/entro_net")
+                while not sess.should_stop():
+                    lr = lr_schedule(global_iters, 
+                                     args.lr_scheduler, 
+                                     args.lr_warmup_steps, 
+                                     args.lr_min_ratio, 
+                                     args.lr_decay)
+                    sess.run(train_op, {main_lr: args.main_lr * lr, 
+                                        aux_lr: args.aux_lr * lr})
+                    if args.val_gap != 0 and global_iters % args.val_gap == 0:
+                        sess.run(val_op)
+                        sess.run(val_bpp_op)
+                    if global_iters % 5000 == 0:
+                        if args.guidance_type == "baseline":
                             save_weights(inv_saver, get_session(sess), 
                                     args.checkpoint_dir + '/inv_net', global_iters)
                             save_weights(entropy_saver, get_session(sess), 
@@ -1049,7 +1374,11 @@ def parse_args(argv):
             "inv_train",
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             description="Trains (or continues to train) a new model.")
-    for cmd in [train_cmd, inv_train_cmd]:
+    int_train_cmd=subparsers.add_parser(
+            "int_train",
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            description="Trains (or continues to train) a new model.")
+    for cmd in [train_cmd, inv_train_cmd, int_train_cmd]:
         cmd.add_argument(
                 "--train_glob", default="images/*.png",
                 help="Glob pattern identifying training data. This pattern must expand "
@@ -1201,6 +1530,15 @@ def parse_args(argv):
         cmd.add_argument(
                 "--int_flow", action="store_true",
                 help="whether to use integer discrete flow.")
+        cmd.add_argument(
+                "--int_discrete_net", action="store_true",
+                help="whether to use integer discrete net.")
+        cmd.add_argument(
+                "--n_levels", type=int, default=4,
+                help="warm-up steps")
+        cmd.add_argument(
+                "--n_flows", type=int, default=8,
+                help="warm-up steps")
 
     # 'compress' subcommand.
     compress_cmd=subparsers.add_parser(
@@ -1356,6 +1694,8 @@ def main(args):
     if args.command == "train" or args.command == "inv_train":
     # if args.command == "train":
         train(args)
+    elif args.command == "int_train":
+        int_train(args)
     elif args.command == "compress":
         if not args.output_file:
             args.output_file=args.input_file + ".tfci"
