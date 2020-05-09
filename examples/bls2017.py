@@ -796,7 +796,7 @@ def int_train(args):
             y = m.differentiable_quant(y)
         y_tilde, likelihoods = entropy_bottleneck(y, training=True)
         if args.ste or args.prepos_ste:
-            y_tilde = m.differentiable_quant(y_tilde)
+            y_tilde = m.differentiable_round(y_tilde)
         input_rev = [y_tilde, tf.zeros(shape=tf.shape(z))]
         input_rev = tf.concat(input_rev, axis=-1)
         x_tilde, _ = inv_transform(input_rev, rev=True)
