@@ -783,7 +783,7 @@ def int_train(args):
         if args.guidance_type == "baseline":
             y_base = analysis_transform(x)
             if args.prepos_ste: 
-                y_base = m.differentiable_quant(y_base)
+                y_base = m.differentiable_round(y_base)
         out, train_jac = inv_transform(x)
         z = out[:, :, :, args.channel_out[-1]:]
         # mle of flow 
@@ -807,7 +807,7 @@ def int_train(args):
             if args.guidance_type == "baseline":
                 base_out = analysis_transform(x_val)
                 if args.prepos_ste: 
-                    base_out = m.differentiable_quant(base_out)
+                    base_out = m.differentiable_round(base_out)
             out, _ = inv_transform(x_val)
             
             # z_samples and z_zeros
