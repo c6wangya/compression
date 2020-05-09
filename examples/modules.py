@@ -289,31 +289,23 @@ class IntInvBlock(keras.layers.Layer):
             self.G = SeqBlock(self.num_filters, self.split_len2)
         # self.built = True
 
-    def call(self, x, rev=False):
+    def call(self, x, rev=False, quant=True):
         x1 = x[:, :, :, :self.split_len1]
         x2 = x[:, :, :, self.split_len1:]
         if not rev:
-            y1 = x1 + differentiable_quant(self.F(x2))
-            y2 = x2 + differentiable_quant(self.G(y1))
-            # y1 = x1 + differentiable_cast_to_int(
-            #                 differentiable_round(
-            #                     self.F(
-            #                         differentiable_cast_to_float(x2))))
-            # y2 = x2 + differentiable_cast_to_int(
-            #                 differentiable_round(
-            #                     self.G(
-            #                         differentiable_cast_to_float(y1))))
+            if quant:
+                y1 = x1 + differentiable_quant(self.F(x2))
+                y2 = x2 + differentiable_quant(self.G(y1))
+            else:
+                y1 = x1 + self.F(x2)
+                y2 = x2 + self.G(y1)
         else:
-            y2 = x2 - differentiable_quant(self.G(x1))
-            y1 = x1 - differentiable_quant(self.F(y2))
-            # y2 = x2 - differentiable_cast_to_int(
-            #                 differentiable_round(
-            #                     self.G(
-            #                         differentiable_cast_to_float(x1))))
-            # y1 = x1 - differentiable_cast_to_int(
-            #                 differentiable_round(
-            #                     self.F(
-            #                         differentiable_cast_to_float(y2))))
+            if quant:
+                y2 = x2 - differentiable_quant(self.G(x1))
+                y1 = x1 - differentiable_quant(self.F(y2))
+            else:
+                y2 = x2 - self.G(x1)
+                y1 = x1 - self.F(y2)
         return tf.concat([y1, y2], -1)
 
     def jacobian(self, x, rev=False):
@@ -581,15 +573,21 @@ class IntDiscreteNet(keras.layers.Layer):
                 h_in, w_in, channel_in = h_in // 2, w_in // 2, channel_in * 4
         self.built = True
     
-    def call(self, x, rev=False):
+    def call(self, x, rev=False, quant=True):
         jacobian = 0
         if not rev:
             for i in range(self.num_ops):
-                x = self.operations[i](x, rev)
+                if not quant and i == self.num_ops - 1:
+                    x = self.operations[i](x, rev, quant)
+                else:
+                    x = self.operations[i](x, rev)
                 # jacobian += self.operations[i].jacobian(x, rev)
         else:
             for i in reversed(range(self.num_ops)):
-                x = self.operations[i](x, rev)
+                if not quant and i == self.num_ops - 1:
+                    x = self.operations[i](x, rev, quant)
+                else:
+                    x = self.operations[i](x, rev)
                 # jacobian += self.operations[i].jacobian(x, rev)
         return x, jacobian
 
