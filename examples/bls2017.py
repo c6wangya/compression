@@ -792,11 +792,15 @@ def int_train(args):
             train_flow /= -np.log(2) * num_pixels
         y = tf.slice(out, [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
         # prepos ste
-        if args.prepos_ste:
-            y = m.differentiable_quant(y)
+        # if args.prepos_ste:
+        #     y = m.differentiable_quant(y)
+        if args.y_scale_up:
+            y *= 255
         y_tilde, likelihoods = entropy_bottleneck(y, training=True)
-        if args.ste or args.prepos_ste:
-            y_tilde = m.differentiable_round(y_tilde)
+        # if args.ste or args.prepos_ste:
+        #     y_tilde = m.differentiable_round(y_tilde)
+        if args.y_scale_up:
+            y_tilde = y_tilde / 255
         input_rev = [y_tilde, tf.zeros(shape=tf.shape(z))]
         input_rev = tf.concat(input_rev, axis=-1)
         x_tilde, _ = inv_transform(input_rev, rev=True)
@@ -816,7 +820,11 @@ def int_train(args):
             
             # y hat
             y_val = tf.slice(out, [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
+            if args.y_scale_up:
+                y_val *= 255
             y_val_hat, _ = entropy_bottleneck(y_val, training=False)
+            if args.y_scale_up:
+                y_val_hat /= 255
 
             # compute bpp
             string = entropy_bottleneck.compress(y_val)
@@ -1542,6 +1550,9 @@ def parse_args(argv):
         cmd.add_argument(
                 "--n_flows", type=int, default=8,
                 help="warm-up steps")
+        cmd.add_argument(
+                "--y_scale_up", action="store_true",
+                help="whether to scale up y before entropy bottleneck.")
 
     # 'compress' subcommand.
     compress_cmd=subparsers.add_parser(
