@@ -824,7 +824,7 @@ def int_train(args):
             if args.y_scale_up:
                 y_val_hat /= 255
             # compute bpp
-            string = entropy_bottleneck.compress(y_val)
+            string = entropy_bottleneck.compress(y_val * (255 if args.y_scale_up else 1))
             val_num_pixels = 1 * 512 ** 2
             string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
             val_bpp = tf.math.divide(string_len, val_num_pixels)
