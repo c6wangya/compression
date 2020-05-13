@@ -280,7 +280,7 @@ def train(args):
             x = tf.add(x, tf.random_uniform(tf.shape(x), 0, 1.))
 
         # Instantiate model.
-        entropy_bottleneck=tfc.EntropyBottleneck(noise=(not args.quant_grad))
+        entropy_bottleneck=tfc.EntropyBottleneck()
         if args.command == "train":
             print("training!")
             analysis_transform=m.AnalysisTransform(args.num_filters)
@@ -776,7 +776,7 @@ def int_train(args):
             x = tf.add(x, tf.random_uniform(tf.shape(x), 0, 1.))
 
         # Instantiate model.
-        entropy_bottleneck=tfc.EntropyBottleneck(noise=(not args.quant_grad))
+        entropy_bottleneck=tfc.EntropyBottleneck()
         # inv train net
         inv_transform = m.IntDiscreteNet(blk_type=args.blk_type, 
                 num_filters=args.num_filters, downsample_type=args.downsample_type, 
@@ -1080,7 +1080,7 @@ def compress(args):
         x = tf.random_crop(x, (1, 256, 256, 3))
 
         # Instantiate model.
-        entropy_bottleneck=tfc.EntropyBottleneck(noise=(not args.quant_grad))
+        entropy_bottleneck=tfc.EntropyBottleneck()
         if not args.invnet:
             analysis_transform=m.AnalysisTransform(args.num_filters)
             synthesis_transform=m.SynthesisTransform(args.num_filters)
@@ -1254,6 +1254,110 @@ def compress(args):
                 # print("CHROMA Multiscale SSIM (dB): {:0.2f}".format(-10 * np.log10(1 - chroma_msssim)))
                 print("Information content in bpp: {:0.4f}".format(eval_bpp))
                 print("Actual bits per pixel: {:0.4f}".format(bpp))
+
+
+def idn_compress(args):
+    """Compresses an image."""
+    os.environ["CUDA_VISIBLE_DEVICES"]="{}".format(args.gpu_device)
+
+    with tf.Graph().as_default() as graph:
+        tf.set_random_seed(1234)
+        # Load input image and add batch dimension.
+        x=read_png(args.input_file)
+        x=tf.expand_dims(x, 0)
+        x.set_shape([1, None, None, 3])
+        x_shape=tf.shape(x)
+        
+        # randomly crop img to 256x256
+        x = tf.random_crop(x, (1, 256, 256, 3))
+
+        # Instantiate model.
+        entropy_bottleneck = tfc.EntropyBottleneck()
+        analysis_transform = m.AnalysisTransform(args.channel_out[0])
+        # synthesis_transform = m.SynthesisTransform(args.num_filters)
+        inv_transform = m.IntDiscreteNet(blk_type=args.blk_type, 
+            num_filters=args.num_filters, downsample_type=args.downsample_type, 
+            n_levels=args.n_levels, n_flows=args.n_flows)
+        
+        # Transform and compress the image.
+        # baseline performance
+        base_y = analysis_transform(x)
+        # base_y_hat, _ = entropy_bottleneck(base_y, training=False)
+        # base_x_hat = synthesis_transform(base_y_hat)
+        # base_x_hat = base_x_hat[:, :x_shape[1], :x_shape[2], :]
+
+        # idn performance
+        out, _ = inv_transform(x)  # k/255
+        z = out[:, :, :, args.channel_out[-1]:]
+        z_zeros = tf.zeros_like(z)
+        y = tf.slice(out, [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
+        scaled_y = y * 255  # k (integer)
+        y_hat, likelihoods = entropy_bottleneck(scaled_y, training=False)
+        y_hat /= 255
+        x_hat, _ = inv_transform(tf.concat([y_hat, z_zeros], axis=-1), rev=True)
+
+        base_string = entropy_bottleneck.compress(base_y)
+        string = entropy_bottleneck.compress(scaled_y)
+        num_pixels = tf.cast(tf.reduce_prod(tf.shape(x)[:-1]), dtype=tf.float32)
+
+        # Total number of bits divided by number of pixels.
+        eval_bpp = tf.reduce_sum(tf.log(likelihoods)) / (-np.log(2) * num_pixels)
+
+        # Bring both images back to 0..255 range.
+        x *= 255
+        x_hat = tf.clip_by_value(x_hat, 0, 1)
+        x_hat = tf.round(x_hat * 255)
+        # base_x_hat = tf.clip_by_value(base_x_hat, 0, 1)
+        # base_x_hat = tf.round(base_x_hat * 255)
+
+        # # baseline performance eval
+        # mse = tf.reduce_mean(tf.squared_difference(x, x_hat))
+        # luma_x = tf.slice(tf.image.rgb_to_yuv(x), [0, 0, 0, 0], [-1, -1, -1, 1])
+        # luma_x_hat = tf.slice(tf.image.rgb_to_yuv(x_hat), [
+        #     0, 0, 0, 0], [-1, -1, -1, 1])
+        # luma_psnr = tf.squeeze(tf.image.psnr(luma_x_hat, luma_x, 255))
+
+        # idn performance eval
+        luma_x = tf.slice(tf.image.rgb_to_yuv(x), [0, 0, 0, 0], [-1, -1, -1, 1])
+        luma_x_hat = tf.slice(tf.image.rgb_to_yuv(x_hat), [
+            0, 0, 0, 0], [-1, -1, -1, 1])
+        luma_psnr = tf.squeeze(tf.image.psnr(luma_x_hat, luma_x, 255))
+
+        init_op = tf.global_variables_initializer()
+        with tf.Session() as sess:
+            sess.run(init_op)
+            latest = tf.train.latest_checkpoint(checkpoint_dir=args.checkpoint_dir)
+            tf.train.Saver().restore(sess, save_path=latest)
+
+            entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables)
+            analysis_saver = tf.train.Saver(analysis_transform.trainable_variables)
+            # restore weights
+            restore_weights(entropy_saver, sess, 
+                    args.pretrain_checkpoint_dir + "/entro_net")
+            restore_weights(analysis_saver, sess, 
+                    args.pretrain_checkpoint_dir + "/ana_net")
+
+            # get the compressed string and the tensor shapes.
+            tensors=[base_string, tf.shape(x)[1:-1], tf.shape(y)[1:-1]]
+            arrays=sess.run(tensors)
+
+            # Write a binary file with the shape information and the compressed string.
+            packed=tfc.PackedTensors()
+            packed.pack(tensors, arrays)
+            with open(args.output_file, "wb") as f:
+                f.write(packed.string)
+
+            # If requested, transform the quantized image back and measure performance.
+            if args.verbose:
+                eval_bpp, luma_psnr, num_pixels = sess.run([eval_bpp, luma_psnr, num_pixels])
+
+                # The actual bits per pixel including overhead.
+                bpp = len(packed.string) * 8 / num_pixels
+
+                print("LUMA PSNR (dB): {:0.2f}".format(luma_psnr))
+                print("Information content in bpp: {:0.4f}".format(eval_bpp))
+                print("Actual baseline bits per pixel: {:0.4f}".format(bpp))
+                # print("Actual bits per pixel: {:0.4f}".format(bpp))
 
 
 def multi_compress(args):
@@ -1613,6 +1717,12 @@ def parse_args(argv):
             "compress",
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             description="Reads a PNG file, compresses it, and writes a TFCI file.")
+    
+    # 'idn_compress' subcommand.
+    idn_compress_cmd=subparsers.add_parser(
+            "idn_compress",
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            description="Reads a PNG file, compresses it with idn, and writes a TFCI file.")
 
     # 'decompress' subcommand.
     decompress_cmd=subparsers.add_parser(
@@ -1643,7 +1753,8 @@ def parse_args(argv):
             help="Size of image patches for training.")
 
     # Arguments for both 'compress' and 'decompress'.
-    for cmd, ext in ((compress_cmd, ".tfci"), (decompress_cmd, ".png"), (evaluation_cmd, ".tfci")):
+    for cmd, ext in ((compress_cmd, ".tfci"), (decompress_cmd, ".png"), 
+                     (evaluation_cmd, ".tfci"), (idn_compress_cmd, ".tfci")):
         cmd.add_argument(
                 "input_file",
                 help="Input filename.")
@@ -1720,6 +1831,12 @@ def parse_args(argv):
         cmd.add_argument(
                 "--use_y_base", action="store_true",
                 help="whether use y_base in reverse process.")
+        cmd.add_argument(
+                "--n_levels", type=int, default=4,
+                help="num of levels")
+        cmd.add_argument(
+                "--n_flows", type=int, default=8,
+                help="num of flows")
             
 
         # 'compress' subcommand.
@@ -1768,6 +1885,10 @@ def main(args):
         if not args.output_file:
             args.output_file=args.input_file + ".tfci"
         compress(args)
+    elif args.command == "idn_compress":
+        if not args.output_file:
+            args.output_file=args.input_file + ".tfci"
+        idn_compress(args)
     elif args.command == "decompress":
         if not args.output_file:
             args.output_file=args.input_file + ".png"
