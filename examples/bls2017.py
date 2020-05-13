@@ -647,12 +647,12 @@ def train(args):
         
         # init saver for all the models
         if "baseline" in args.guidance_type:
-            analysis_saver = tf.train.Saver(analysis_transform.trainable_variables, max_to_keep=1)
-            entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables, max_to_keep=1)
+            analysis_saver = tf.train.Saver(analysis_transform.variables, max_to_keep=1)
+            entropy_saver = tf.train.Saver(entropy_bottleneck.variables, max_to_keep=1)
             if args.guidance_type == "baseline_pretrain":
-                synthesis_saver = tf.train.Saver(synthesis_transform.trainable_variables, max_to_keep=1)
+                synthesis_saver = tf.train.Saver(synthesis_transform.variables, max_to_keep=1)
             elif args.guidance_type == "baseline":
-                inv_saver = tf.train.Saver(inv_transform.trainable_variables, max_to_keep=1)
+                inv_saver = tf.train.Saver(inv_transform.variables, max_to_keep=1)
         
         global_iters = 0
         with tf.train.MonitoredTrainingSession(
@@ -1006,10 +1006,10 @@ def int_train(args):
         
         # init saver for all the models
         if "baseline" in args.guidance_type:
-            analysis_saver = tf.train.Saver(analysis_transform.trainable_variables, max_to_keep=1)
-            entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables, max_to_keep=1)
+            analysis_saver = tf.train.Saver(analysis_transform.variables, max_to_keep=1)
+            entropy_saver = tf.train.Saver(entropy_bottleneck.variables, max_to_keep=1)
             if args.guidance_type == "baseline":
-                inv_saver = tf.train.Saver(inv_transform.trainable_variables, max_to_keep=1)
+                inv_saver = tf.train.Saver(inv_transform.variables, max_to_keep=1)
         
         global_iters = 0
         with tf.train.MonitoredTrainingSession(
@@ -1195,8 +1195,8 @@ def compress(args):
                 sess.run(init_op)
                 # init savers
                 # analysis_saver = tf.train.Saver(analysis_transform.trainable_variables)
-                entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables)
-                inv_saver = tf.train.Saver(inv_transform.trainable_variables)
+                entropy_saver = tf.train.Saver(entropy_bottleneck.variables)
+                inv_saver = tf.train.Saver(inv_transform.variables)
                 # restore weights
                 restore_weights(inv_saver, sess, 
                         args.checkpoint_dir + "/inv_net")
@@ -1206,10 +1206,12 @@ def compress(args):
                 #         args.pretrain_checkpoint_dir + "/entro_net")
             elif args.guidance_type == "baseline_pretrain":
                 sess.run(init_op)
+                # latest=tf.train.latest_checkpoint(checkpoint_dir=args.checkpoint_dir)
+                # tf.train.Saver().restore(sess, save_path=latest)
                 # init savers
-                entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables)
-                synthesis_saver = tf.train.Saver(synthesis_transform.trainable_variables)
-                analysis_saver = tf.train.Saver(analysis_transform.trainable_variables)
+                entropy_saver = tf.train.Saver(entropy_bottleneck.variables)
+                synthesis_saver = tf.train.Saver(synthesis_transform.variables)
+                analysis_saver = tf.train.Saver(analysis_transform.variables)
                 # restore weights
                 restore_weights(synthesis_saver, sess, 
                         args.checkpoint_dir + "/syn_net")
@@ -1221,7 +1223,7 @@ def compress(args):
                 latest=tf.train.latest_checkpoint(checkpoint_dir=args.checkpoint_dir)
                 tf.train.Saver().restore(sess, save_path=latest)
                 if args.use_y_base:
-                    analysis_saver = tf.train.Saver(analysis_transform.trainable_variables)
+                    analysis_saver = tf.train.Saver(analysis_transform.variables)
                     restore_weights(analysis_saver, sess, 
                         args.pretrain_checkpoint_dir + "/ana_net")
 
@@ -1329,8 +1331,8 @@ def idn_compress(args):
             latest = tf.train.latest_checkpoint(checkpoint_dir=args.checkpoint_dir)
             tf.train.Saver().restore(sess, save_path=latest)
 
-            entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables)
-            analysis_saver = tf.train.Saver(analysis_transform.trainable_variables)
+            entropy_saver = tf.train.Saver(entropy_bottleneck.variables)
+            analysis_saver = tf.train.Saver(analysis_transform.variables)
             # restore weights
             restore_weights(entropy_saver, sess, 
                     args.pretrain_checkpoint_dir + "/entro_net")
