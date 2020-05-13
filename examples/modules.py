@@ -680,52 +680,6 @@ class InvCompressionNet(keras.Model):
         out.append(xx)
         return out, jacobian
 
-    # # if rev, x contains latent z1, z2 ... zn, LR, output contains LR_n-1, ..., LR1, HR
-    # # else x contains HR, output contains [LR1, z1], [LR2, z2], ... [LR, zn]
-    # # if multi_reconstruction (rev), x contains z1, z2, ..., zn, [LR1, ..., LR_n-1, LR], output contains LR_n-1, ..., LR1, [HR, HR(by LR_n-1), ...]
-    # def call(self, x, rev=False, multi_reconstruction=False):
-    #     xx = x[-1]
-    #     out = []
-    #     # xx = print_act_stats(xx, "before all forward")
-    #     if not rev:
-    #         scnt = 0
-    #         for i in range
-    #         for cnt in range(self.upscale_log):
-    #             bcnt = self.block_num[cnt] + 1
-    #             # if self.use_inv_conv:
-    #             #     bcnt += 1
-    #             for i in range(bcnt):
-    #                 # xx = self.operations.get_layer(index=(scnt + i))(xx, rev)
-    #                 xx = self.operations[scnt + i](xx, rev)
-    #                 # xx = print_act_stats(xx, "after forward operation {} at scale {}".format(i, cnt))
-    #             if self.use_inv_conv and cnt == self.upscale_log - 1:
-    #                 xx = self.inv_conv(xx, rev)
-    #             out.append(xx)
-    #             xx = tf.slice(xx, [0, 0, 0, 0], [-1, -1, -1, self.channel_out[cnt]])
-    #             scnt += bcnt
-    #     else:
-    #         if not multi_reconstruction:
-    #             scnt = len(self.operations) - (self.block_num[-1] + 1)
-    #             # if self.use_inv_conv:
-    #             #     scnt -= 1
-    #             for cnt in reversed(range(self.upscale_log)):
-    #                 bcnt = self.block_num[cnt] + 1
-    #                 # if self.use_inv_conv:
-    #                 #     bcnt += 1
-    #                 if x[cnt].get_shape()[-1] != 1:
-    #                     print(x[cnt].get_shape())
-    #                     xx = tf.concat([xx, x[cnt]], -1)
-    #                 if self.use_inv_conv and cnt == self.upscale_log - 1:
-    #                     xx = self.inv_conv(xx, rev)
-    #                 for i in reversed(range(bcnt)):
-    #                     # xx = print_act_stats(xx, "before reverse operation {} at scale {}".format(i, cnt))
-    #                     xx = self.operations[scnt + i](xx, rev)
-    #                 out.append(xx)
-    #                 scnt -= bcnt
-    #             # xx = print_act_stats(xx, "last reverse operation")
-    #             out.append(xx)
-    #     return out
-
 
 class InvHSRNet(keras.Model):
     def __init__(self, channel_in, channel_out, block_num, upscale_log, 
@@ -897,17 +851,6 @@ class SqueezeDownsampling(keras.layers.Layer):
 
     def jacobian(self, x, rev=False):
         return 0
-
-# def space_to_depth(x):
-#     xs = x.size()
-#     # Pick off every second element
-#     x = x.view(xs[0], xs[1], xs[2] // 2, 2, xs[3] // 2, 2)
-#     # Transpose picked elements next to channels.
-#     x = x.permute((0, 1, 3, 5, 2, 4)).contiguous()
-#     # Combine with channels.
-#     x = x.view(xs[0], xs[1] * 4, xs[2] // 2, xs[3] // 2)
-#     return x
-
 
 
 class ActNorm(keras.layers.Layer):

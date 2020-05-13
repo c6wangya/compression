@@ -209,6 +209,13 @@ def lr_schedule(step, mode, warmup_steps=10000, min_ratio=0.1, decay=0.999995):
         return curr_lr
     return 1
 
+def df_schedule(step, decay_iter, last_iter):
+    if step < decay_iter:
+        return 1.
+    elif step > last_iter:
+        return 0.
+    return 1 - float((step - decay_iter)) / (last_iter - decay_iter)
+
 
 def train(args):
     """Trains the model."""
@@ -273,7 +280,7 @@ def train(args):
             x = tf.add(x, tf.random_uniform(tf.shape(x), 0, 1.))
 
         # Instantiate model.
-        entropy_bottleneck=tfc.EntropyBottleneck(noise=(not args.quant_grad))
+        entropy_bottleneck=tfc.EntropyBottleneck()
         if args.command == "train":
             print("training!")
             analysis_transform=m.AnalysisTransform(args.num_filters)
@@ -640,12 +647,12 @@ def train(args):
         
         # init saver for all the models
         if "baseline" in args.guidance_type:
-            analysis_saver = tf.train.Saver(analysis_transform.trainable_variables, max_to_keep=1)
-            entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables, max_to_keep=1)
+            analysis_saver = tf.train.Saver(analysis_transform.variables, max_to_keep=1)
+            entropy_saver = tf.train.Saver(entropy_bottleneck.variables, max_to_keep=1)
             if args.guidance_type == "baseline_pretrain":
-                synthesis_saver = tf.train.Saver(synthesis_transform.trainable_variables, max_to_keep=1)
+                synthesis_saver = tf.train.Saver(synthesis_transform.variables, max_to_keep=1)
             elif args.guidance_type == "baseline":
-                inv_saver = tf.train.Saver(inv_transform.trainable_variables, max_to_keep=1)
+                inv_saver = tf.train.Saver(inv_transform.variables, max_to_keep=1)
         
         global_iters = 0
         with tf.train.MonitoredTrainingSession(
@@ -769,7 +776,7 @@ def int_train(args):
             x = tf.add(x, tf.random_uniform(tf.shape(x), 0, 1.))
 
         # Instantiate model.
-        entropy_bottleneck=tfc.EntropyBottleneck(noise=(not args.quant_grad))
+        entropy_bottleneck=tfc.EntropyBottleneck()
         # inv train net
         inv_transform = m.IntDiscreteNet(blk_type=args.blk_type, 
                 num_filters=args.num_filters, downsample_type=args.downsample_type, 
@@ -810,8 +817,8 @@ def int_train(args):
         if args.val_gap != 0:
             if args.guidance_type == "baseline":
                 base_out = analysis_transform(x_val)
-                if args.prepos_ste: 
-                    base_out = m.differentiable_round(base_out)
+                # if args.prepos_ste: 
+                #     base_out = m.differentiable_round(base_out)
             out, _ = inv_transform(x_val)
             
             # z_samples and z_zeros
@@ -829,10 +836,9 @@ def int_train(args):
             string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
             val_bpp = tf.math.divide(string_len, val_num_pixels)
             if args.guidance_type == "baseline":
-                string = entropy_bottleneck.compress(base_out)
-                val_num_pixels = 1 * 512 ** 2
-                string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
-                base_val_bpp = tf.math.divide(string_len, val_num_pixels)
+                base_string = entropy_bottleneck.compress(base_out)
+                base_string_len = tf.reduce_sum(tf.cast(tf.strings.length(base_string), dtype=tf.float32))
+                base_val_bpp = tf.math.divide(base_string_len, val_num_pixels)
             # y^, 0
             x_val_y_hat_z_0, _ = inv_transform(tf.concat([y_val_hat, z_zeros], axis=-1), rev=True)
             # y, 0
@@ -857,32 +863,68 @@ def int_train(args):
             train_jac = 0
 
         # The rate-distortion cost.
+        decay_factor = tf.placeholder("float")
         train_loss = args.lmbda * train_mse + \
                     args.beta * train_bpp + \
                     flow_loss_weight * (train_flow + train_jac) + \
-                    args.y_guidance_weight * train_y_guidance
+                    args.y_guidance_weight * decay_factor * train_y_guidance
         
-        if "baseline" not in args.guidance_type:
-            tvars = tf.trainable_variables()
-        else:
-            tvars = inv_transform.trainable_variables + \
-                entropy_bottleneck.trainable_variables
-
-        filtered_vars = [var for var in tvars \
-                if not 'haar_downsampling' in var.name \
-                and not 'gray_scale_guidance' in var.name]
         # Minimize loss and auxiliary loss, and execute update op.
         main_lr = tf.placeholder(tf.float32, [], 'main_lr')
         aux_lr = tf.placeholder(tf.float32, [], 'aux_lr')
         step = tf.train.create_global_step()
-        main_optimizer=tf.train.AdamOptimizer(learning_rate=main_lr)
-        main_gradients, main_variables = zip(*main_optimizer.compute_gradients(train_loss, filtered_vars))
-        main_gradients = [
-            None if gradient is None else tf.clip_by_norm(gradient, args.grad_clipping)
-            for gradient in main_gradients]
-        main_step = main_optimizer.apply_gradients(zip(main_gradients, main_variables), global_step=step)
-        
-        train_op=tf.group(main_step)
+        if args.optimize_separately:  # train loss won't affect auxiliary net
+            main_vars = inv_transform.trainable_variables
+            aux_vars = entropy_bottleneck.trainable_variables
+            # main optimizer
+            main_optimizer = tf.train.AdamOptimizer(learning_rate=main_lr)
+            main_gradients, main_variables = zip(*main_optimizer.compute_gradients(train_loss, main_vars))
+            main_gradients = [
+                None if gradient is None else tf.clip_by_norm(gradient, args.grad_clipping)
+                for gradient in main_gradients]
+            main_step = main_optimizer.apply_gradients(zip(main_gradients, main_variables), global_step=step)
+            if args.train_aux:
+                # auxiliary optimizer
+                aux_optimizer = tf.train.AdamOptimizer(learning_rate=aux_lr)
+                aux_gradients, aux_variables = zip(*aux_optimizer.compute_gradients( \
+                        entropy_bottleneck.losses[0], aux_vars))
+                aux_gradients = [
+                    None if gradient is None else tf.clip_by_norm(gradient, args.grad_clipping)
+                    for gradient in aux_gradients]
+                aux_step = aux_optimizer.apply_gradients(zip(aux_gradients, aux_variables))
+                # group training operations
+                train_op=tf.group(main_step, aux_step, entropy_bottleneck.updates[0])
+            else:
+                train_op=tf.group(main_step)
+        else:
+            if "baseline" not in args.guidance_type:
+                tvars = tf.trainable_variables()
+            else:
+                tvars = inv_transform.trainable_variables + \
+                    entropy_bottleneck.trainable_variables
+            filtered_vars = [var for var in tvars \
+                    if not 'haar_downsampling' in var.name \
+                    and not 'gray_scale_guidance' in var.name]
+            # main optimizer
+            main_optimizer=tf.train.AdamOptimizer(learning_rate=main_lr)
+            main_gradients, main_variables = zip(*main_optimizer.compute_gradients(train_loss, filtered_vars))
+            main_gradients = [
+                None if gradient is None else tf.clip_by_norm(gradient, args.grad_clipping)
+                for gradient in main_gradients]
+            main_step = main_optimizer.apply_gradients(zip(main_gradients, main_variables), global_step=step)
+            if args.train_aux:
+                # auxiliary optimizer
+                aux_optimizer = tf.train.AdamOptimizer(learning_rate=aux_lr)
+                aux_gradients, aux_variables = zip(*aux_optimizer.compute_gradients( \
+                        entropy_bottleneck.losses[0], filtered_vars))
+                aux_gradients = [
+                    None if gradient is None else tf.clip_by_norm(gradient, args.grad_clipping)
+                    for gradient in aux_gradients]
+                aux_step = aux_optimizer.apply_gradients(zip(aux_gradients, aux_variables))
+                # group training operations
+                train_op=tf.group(main_step, aux_step, entropy_bottleneck.updates[0])
+            else:
+                train_op=tf.group(main_step)
 
         if args.val_gap != 0:
             def comp_psnr(img_hat, img):
@@ -964,10 +1006,10 @@ def int_train(args):
         
         # init saver for all the models
         if "baseline" in args.guidance_type:
-            analysis_saver = tf.train.Saver(analysis_transform.trainable_variables, max_to_keep=1)
-            entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables, max_to_keep=1)
+            analysis_saver = tf.train.Saver(analysis_transform.variables, max_to_keep=1)
+            entropy_saver = tf.train.Saver(entropy_bottleneck.variables, max_to_keep=1)
             if args.guidance_type == "baseline":
-                inv_saver = tf.train.Saver(inv_transform.trainable_variables, max_to_keep=1)
+                inv_saver = tf.train.Saver(inv_transform.variables, max_to_keep=1)
         
         global_iters = 0
         with tf.train.MonitoredTrainingSession(
@@ -980,12 +1022,13 @@ def int_train(args):
                                      args.lr_warmup_steps, 
                                      args.lr_min_ratio, 
                                      args.lr_decay)
+                    df = df_schedule(global_iters, args.df_iter, args.end_iter)
                     sess.run(train_op, {main_lr: args.main_lr * lr, 
-                                        aux_lr: args.aux_lr * lr})
+                                        aux_lr: args.aux_lr * lr,
+                                        decay_factor: df})
                     if args.val_gap != 0 and global_iters % args.val_gap == 0:
-                        # for i in range(24)
-                        sess.run(val_op)
-                        sess.run(val_bpp_op)
+                        sess.run(val_op, {decay_factor: df})
+                        sess.run(val_bpp_op, {decay_factor: df})
                     global_iters += 1
             else:
                 if args.finetune:
@@ -1005,11 +1048,13 @@ def int_train(args):
                                      args.lr_warmup_steps, 
                                      args.lr_min_ratio, 
                                      args.lr_decay)
+                    df = df_schedule(global_iters, args.df_iter, args.end_iter)
                     sess.run(train_op, {main_lr: args.main_lr * lr, 
-                                        aux_lr: args.aux_lr * lr})
+                                        aux_lr: args.aux_lr * lr, 
+                                        decay_factor: df})
                     if args.val_gap != 0 and global_iters % args.val_gap == 0:
-                        sess.run(val_op)
-                        sess.run(val_bpp_op)
+                        sess.run(val_op, {decay_factor: df})
+                        sess.run(val_bpp_op, {decay_factor: df})
                     if global_iters % 5000 == 0:
                         if args.guidance_type == "baseline":
                             save_weights(inv_saver, get_session(sess), 
@@ -1035,7 +1080,7 @@ def compress(args):
         x = tf.random_crop(x, (1, 256, 256, 3))
 
         # Instantiate model.
-        entropy_bottleneck=tfc.EntropyBottleneck(noise=(not args.quant_grad))
+        entropy_bottleneck=tfc.EntropyBottleneck()
         if not args.invnet:
             analysis_transform=m.AnalysisTransform(args.num_filters)
             synthesis_transform=m.SynthesisTransform(args.num_filters)
@@ -1150,8 +1195,8 @@ def compress(args):
                 sess.run(init_op)
                 # init savers
                 # analysis_saver = tf.train.Saver(analysis_transform.trainable_variables)
-                entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables)
-                inv_saver = tf.train.Saver(inv_transform.trainable_variables)
+                entropy_saver = tf.train.Saver(entropy_bottleneck.variables)
+                inv_saver = tf.train.Saver(inv_transform.variables)
                 # restore weights
                 restore_weights(inv_saver, sess, 
                         args.checkpoint_dir + "/inv_net")
@@ -1161,10 +1206,12 @@ def compress(args):
                 #         args.pretrain_checkpoint_dir + "/entro_net")
             elif args.guidance_type == "baseline_pretrain":
                 sess.run(init_op)
+                # latest=tf.train.latest_checkpoint(checkpoint_dir=args.checkpoint_dir)
+                # tf.train.Saver().restore(sess, save_path=latest)
                 # init savers
-                entropy_saver = tf.train.Saver(entropy_bottleneck.trainable_variables)
-                synthesis_saver = tf.train.Saver(synthesis_transform.trainable_variables)
-                analysis_saver = tf.train.Saver(analysis_transform.trainable_variables)
+                entropy_saver = tf.train.Saver(entropy_bottleneck.variables)
+                synthesis_saver = tf.train.Saver(synthesis_transform.variables)
+                analysis_saver = tf.train.Saver(analysis_transform.variables)
                 # restore weights
                 restore_weights(synthesis_saver, sess, 
                         args.checkpoint_dir + "/syn_net")
@@ -1176,7 +1223,7 @@ def compress(args):
                 latest=tf.train.latest_checkpoint(checkpoint_dir=args.checkpoint_dir)
                 tf.train.Saver().restore(sess, save_path=latest)
                 if args.use_y_base:
-                    analysis_saver = tf.train.Saver(analysis_transform.trainable_variables)
+                    analysis_saver = tf.train.Saver(analysis_transform.variables)
                     restore_weights(analysis_saver, sess, 
                         args.pretrain_checkpoint_dir + "/ana_net")
 
@@ -1209,6 +1256,110 @@ def compress(args):
                 # print("CHROMA Multiscale SSIM (dB): {:0.2f}".format(-10 * np.log10(1 - chroma_msssim)))
                 print("Information content in bpp: {:0.4f}".format(eval_bpp))
                 print("Actual bits per pixel: {:0.4f}".format(bpp))
+
+
+def idn_compress(args):
+    """Compresses an image."""
+    os.environ["CUDA_VISIBLE_DEVICES"]="{}".format(args.gpu_device)
+
+    with tf.Graph().as_default() as graph:
+        tf.set_random_seed(1234)
+        # Load input image and add batch dimension.
+        x=read_png(args.input_file)
+        x=tf.expand_dims(x, 0)
+        x.set_shape([1, None, None, 3])
+        x_shape=tf.shape(x)
+        
+        # randomly crop img to 256x256
+        x = tf.random_crop(x, (1, 256, 256, 3))
+
+        # Instantiate model.
+        entropy_bottleneck = tfc.EntropyBottleneck()
+        analysis_transform = m.AnalysisTransform(args.channel_out[0])
+        # synthesis_transform = m.SynthesisTransform(args.num_filters)
+        inv_transform = m.IntDiscreteNet(blk_type=args.blk_type, 
+            num_filters=args.num_filters, downsample_type=args.downsample_type, 
+            n_levels=args.n_levels, n_flows=args.n_flows)
+        
+        # Transform and compress the image.
+        # baseline performance
+        base_y = analysis_transform(x)
+        # base_y_hat, _ = entropy_bottleneck(base_y, training=False)
+        # base_x_hat = synthesis_transform(base_y_hat)
+        # base_x_hat = base_x_hat[:, :x_shape[1], :x_shape[2], :]
+
+        # idn performance
+        out, _ = inv_transform(x)  # k/255
+        z = out[:, :, :, args.channel_out[-1]:]
+        z_zeros = tf.zeros_like(z)
+        y = tf.slice(out, [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
+        scaled_y = y * 255  # k (integer)
+        y_hat, likelihoods = entropy_bottleneck(scaled_y, training=False)
+        y_hat /= 255
+        x_hat, _ = inv_transform(tf.concat([y_hat, z_zeros], axis=-1), rev=True)
+
+        base_string = entropy_bottleneck.compress(base_y)
+        string = entropy_bottleneck.compress(scaled_y)
+        num_pixels = tf.cast(tf.reduce_prod(tf.shape(x)[:-1]), dtype=tf.float32)
+
+        # Total number of bits divided by number of pixels.
+        eval_bpp = tf.reduce_sum(tf.log(likelihoods)) / (-np.log(2) * num_pixels)
+
+        # Bring both images back to 0..255 range.
+        x *= 255
+        x_hat = tf.clip_by_value(x_hat, 0, 1)
+        x_hat = tf.round(x_hat * 255)
+        # base_x_hat = tf.clip_by_value(base_x_hat, 0, 1)
+        # base_x_hat = tf.round(base_x_hat * 255)
+
+        # # baseline performance eval
+        # mse = tf.reduce_mean(tf.squared_difference(x, x_hat))
+        # luma_x = tf.slice(tf.image.rgb_to_yuv(x), [0, 0, 0, 0], [-1, -1, -1, 1])
+        # luma_x_hat = tf.slice(tf.image.rgb_to_yuv(x_hat), [
+        #     0, 0, 0, 0], [-1, -1, -1, 1])
+        # luma_psnr = tf.squeeze(tf.image.psnr(luma_x_hat, luma_x, 255))
+
+        # idn performance eval
+        luma_x = tf.slice(tf.image.rgb_to_yuv(x), [0, 0, 0, 0], [-1, -1, -1, 1])
+        luma_x_hat = tf.slice(tf.image.rgb_to_yuv(x_hat), [
+            0, 0, 0, 0], [-1, -1, -1, 1])
+        luma_psnr = tf.squeeze(tf.image.psnr(luma_x_hat, luma_x, 255))
+
+        init_op = tf.global_variables_initializer()
+        with tf.Session() as sess:
+            sess.run(init_op)
+            latest = tf.train.latest_checkpoint(checkpoint_dir=args.checkpoint_dir)
+            tf.train.Saver().restore(sess, save_path=latest)
+
+            entropy_saver = tf.train.Saver(entropy_bottleneck.variables)
+            analysis_saver = tf.train.Saver(analysis_transform.variables)
+            # restore weights
+            restore_weights(entropy_saver, sess, 
+                    args.pretrain_checkpoint_dir + "/entro_net")
+            restore_weights(analysis_saver, sess, 
+                    args.pretrain_checkpoint_dir + "/ana_net")
+
+            # get the compressed string and the tensor shapes.
+            tensors=[base_string, tf.shape(x)[1:-1], tf.shape(y)[1:-1]]
+            arrays=sess.run(tensors)
+
+            # Write a binary file with the shape information and the compressed string.
+            packed=tfc.PackedTensors()
+            packed.pack(tensors, arrays)
+            with open(args.output_file, "wb") as f:
+                f.write(packed.string)
+
+            # If requested, transform the quantized image back and measure performance.
+            if args.verbose:
+                eval_bpp, luma_psnr, num_pixels = sess.run([eval_bpp, luma_psnr, num_pixels])
+
+                # The actual bits per pixel including overhead.
+                bpp = len(packed.string) * 8 / num_pixels
+
+                print("LUMA PSNR (dB): {:0.2f}".format(luma_psnr))
+                print("Information content in bpp: {:0.4f}".format(eval_bpp))
+                print("Actual baseline bits per pixel: {:0.4f}".format(bpp))
+                # print("Actual bits per pixel: {:0.4f}".format(bpp))
 
 
 def multi_compress(args):
@@ -1543,19 +1694,37 @@ def parse_args(argv):
                 help="whether to use integer discrete net.")
         cmd.add_argument(
                 "--n_levels", type=int, default=4,
-                help="warm-up steps")
+                help="num of levels")
         cmd.add_argument(
                 "--n_flows", type=int, default=8,
-                help="warm-up steps")
+                help="num of flows")
         cmd.add_argument(
                 "--y_scale_up", action="store_true",
                 help="whether to scale up y before entropy bottleneck.")
+        cmd.add_argument(
+                "--df_iter", type=int, default=500000,
+                help="decay factor starting iter")
+        cmd.add_argument(
+                "--end_iter", type=int, default=1000000,
+                help="decay factor ending iter")
+        cmd.add_argument(
+                "--train_aux", action="store_true",
+                help="whether to train the auxiliary network")
+        cmd.add_argument(
+                "--optimize_separately", action="store_true",
+                help="whether to use optimize main and aux separately.")
 
     # 'compress' subcommand.
     compress_cmd=subparsers.add_parser(
             "compress",
             formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             description="Reads a PNG file, compresses it, and writes a TFCI file.")
+    
+    # 'idn_compress' subcommand.
+    idn_compress_cmd=subparsers.add_parser(
+            "idn_compress",
+            formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+            description="Reads a PNG file, compresses it with idn, and writes a TFCI file.")
 
     # 'decompress' subcommand.
     decompress_cmd=subparsers.add_parser(
@@ -1586,7 +1755,8 @@ def parse_args(argv):
             help="Size of image patches for training.")
 
     # Arguments for both 'compress' and 'decompress'.
-    for cmd, ext in ((compress_cmd, ".tfci"), (decompress_cmd, ".png"), (evaluation_cmd, ".tfci")):
+    for cmd, ext in ((compress_cmd, ".tfci"), (decompress_cmd, ".png"), 
+                     (evaluation_cmd, ".tfci"), (idn_compress_cmd, ".tfci")):
         cmd.add_argument(
                 "input_file",
                 help="Input filename.")
@@ -1663,6 +1833,12 @@ def parse_args(argv):
         cmd.add_argument(
                 "--use_y_base", action="store_true",
                 help="whether use y_base in reverse process.")
+        cmd.add_argument(
+                "--n_levels", type=int, default=4,
+                help="num of levels")
+        cmd.add_argument(
+                "--n_flows", type=int, default=8,
+                help="num of flows")
             
 
         # 'compress' subcommand.
@@ -1711,6 +1887,10 @@ def main(args):
         if not args.output_file:
             args.output_file=args.input_file + ".tfci"
         compress(args)
+    elif args.command == "idn_compress":
+        if not args.output_file:
+            args.output_file=args.input_file + ".tfci"
+        idn_compress(args)
     elif args.command == "decompress":
         if not args.output_file:
             args.output_file=args.input_file + ".png"
