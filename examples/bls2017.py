@@ -443,7 +443,7 @@ def train(args):
                     string_base = entropy_bottleneck.compress(y_val_base)
                     string_base_len = tf.cast(tf.strings.length(string_base), dtype=tf.float32)
                     string_base_len = tf.reduce_sum(string_base_len)
-                    val_base_bpp = tf.math.divide(string_base_len, val_num_pixels)
+                    val_base_bpp = tf.math.divide(string_base_len * 8, val_num_pixels)
 
         if args.guidance_type == "grayscale":
             y_guidance = guidance_transform(x)
@@ -808,7 +808,8 @@ def int_train(args):
         #     y_tilde = m.differentiable_round(y_tilde)
         if args.y_scale_up:
             y_tilde = y_tilde / 255
-        input_rev = [y_tilde, tf.zeros(shape=tf.shape(z))]
+        input_rev = [y_tilde if not args.guidance_type == "baseline" else y_base / 255., 
+                     tf.zeros(shape=tf.shape(z))]
         input_rev = tf.concat(input_rev, axis=-1)
         x_tilde, _ = inv_transform(input_rev, rev=True)
         flow_loss_weight = args.flow_loss_weight
@@ -834,11 +835,11 @@ def int_train(args):
             string = entropy_bottleneck.compress(y_val * (255 if args.y_scale_up else 1))
             val_num_pixels = 1 * 512 ** 2
             string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
-            val_bpp = tf.math.divide(string_len, val_num_pixels)
+            val_bpp = tf.math.divide(string_len * 8, val_num_pixels)
             if args.guidance_type == "baseline":
                 base_string = entropy_bottleneck.compress(base_out)
                 base_string_len = tf.reduce_sum(tf.cast(tf.strings.length(base_string), dtype=tf.float32))
-                base_val_bpp = tf.math.divide(base_string_len, val_num_pixels)
+                base_val_bpp = tf.math.divide(base_string_len * 8, val_num_pixels)
             # y^, 0
             x_val_y_hat_z_0, _ = inv_transform(tf.concat([y_val_hat, z_zeros], axis=-1), rev=True)
             # y, 0
@@ -1340,7 +1341,7 @@ def idn_compress(args):
                     args.pretrain_checkpoint_dir + "/ana_net")
 
             # get the compressed string and the tensor shapes.
-            tensors=[base_string, tf.shape(x)[1:-1], tf.shape(y)[1:-1]]
+            tensors=[string, tf.shape(x)[1:-1], tf.shape(y)[1:-1]]
             arrays=sess.run(tensors)
 
             # Write a binary file with the shape information and the compressed string.
