@@ -834,11 +834,11 @@ def int_train(args):
             string = entropy_bottleneck.compress(y_val * (255 if args.y_scale_up else 1))
             val_num_pixels = 1 * 512 ** 2
             string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
-            val_bpp = tf.math.divide(string_len, val_num_pixels)
+            val_bpp = tf.math.divide(string_len * 8, val_num_pixels)
             if args.guidance_type == "baseline":
                 base_string = entropy_bottleneck.compress(base_out)
                 base_string_len = tf.reduce_sum(tf.cast(tf.strings.length(base_string), dtype=tf.float32))
-                base_val_bpp = tf.math.divide(base_string_len, val_num_pixels)
+                base_val_bpp = tf.math.divide(base_string_len * 8, val_num_pixels)
             # y^, 0
             x_val_y_hat_z_0, _ = inv_transform(tf.concat([y_val_hat, z_zeros], axis=-1), rev=True)
             # y, 0
