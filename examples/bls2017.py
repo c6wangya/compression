@@ -77,6 +77,12 @@ def read_png(filename):
     image /= 255
     return image
 
+def read_imagenet64(image):
+    """Load a imagenet64 file"""
+    image = tf.cast(image, tf.float32)
+    image /= 255
+    return image
+
 def read_int_png(filename):
     """Loads a PNG image file."""
     string = tf.read_file(filename)
@@ -216,6 +222,56 @@ def df_schedule(step, decay_iter, last_iter):
         return 0.
     return 1 - float((step - decay_iter)) / (last_iter - decay_iter)
 
+def unpickle(file):
+    import pickle
+    with open(file, 'rb') as fo:
+        dict = pickle.load(fo)
+    return dict
+
+def glob_dataset(file_glob, threads, patch_size, batch_size):
+    files = glob.glob(file_glob)
+    if not files:
+        raise RuntimeError(
+                "No training images found with glob '{}'.".format(file_glob))
+    
+    dataset = tf.data.Dataset.from_tensor_slices(files)
+    dataset = dataset.shuffle(
+            buffer_size=len(files)).repeat()
+    dataset = dataset.map(
+            read_png, num_parallel_calls=threads)
+    scale = 1
+    dataset = dataset.map(
+            lambda x: tf.random_crop(x, (patch_size, patch_size, 3)))
+    dataset = dataset.batch(batch_size)
+    dataset = dataset.prefetch(32)
+    return dataset
+
+def glob_imagenet_dataset(file_glob, threads, patch_size, batch_size):
+    files = glob.glob(file_glob)
+    if not files:
+        raise RuntimeError(
+                "No training images found with glob '{}'.".format(file_glob))
+    xs = []
+    for file in files:
+        d = unpickle(file)
+        x = d['data']
+        x = np.dstack((x[:, :patch_size**2], 
+                    x[:, patch_size**2:patch_size**2*2], 
+                    x[:, patch_size**2*2:]))
+        x = x.reshape((x.shape[0], patch_size, patch_size, 3))
+        xs.append(x)
+    x = np.concatenate(xs, 0)
+    x = [x[i, ...] for i in range(x.shape[0])]
+    def gen():
+        for img in x:
+            yield img
+    dataset = tf.data.Dataset.from_generator(gen, tf.float32, 
+            tf.TensorShape([patch_size, patch_size, 3]))
+    dataset = dataset.shuffle(buffer_size=len(x)).repeat()
+    dataset = dataset.map(read_imagenet64, num_parallel_calls=threads)
+    dataset = dataset.batch(batch_size)
+    dataset = dataset.prefetch(32)
+    return dataset
 
 def train(args):
     """Trains the model."""
@@ -228,42 +284,18 @@ def train(args):
     with tf.Graph().as_default() as graph:
         # Create input data pipeline.
         with tf.device("/cpu:0"):
-            train_files=glob.glob(args.train_glob)
-            if not train_files:
-                raise RuntimeError(
-                        "No training images found with glob '{}'.".format(args.train_glob))
-            
-            train_dataset=tf.data.Dataset.from_tensor_slices(train_files)
-            train_dataset=train_dataset.shuffle(
-                    buffer_size=len(train_files)).repeat()
-            train_dataset=train_dataset.map(
-                    read_png, num_parallel_calls=args.preprocess_threads)
-            # train_dataset = train_dataset.map(DataPreprocessor())
-            # train_dataset = train_dataset.map(
-            #         lambda x: tf.image.random_saturation(x, lower=0.7, upper=1))
-            # scale = get_normal_random_number(args.scale, 0.1, args.scale - 0.15, args.scale + 0.05)
-            scale = 1
-            train_dataset=train_dataset.map(
-                    lambda x: tf.random_crop(x, (int(args.patchsize / scale), int(args.patchsize / scale), 3)))
-            # train_dataset = train_dataset.map(
-            #         lambda x: tf.image.resize_images(x, (args.patchsize, args.patchsize), method=tf.image.ResizeMethod.BICUBIC))
-            train_dataset=train_dataset.batch(args.batchsize)
-            train_dataset=train_dataset.prefetch(32)
-
+            tf.set_random_seed(1234)
+            glob_func = glob_dataset if args.patchsize == 256 \
+                    else glob_imagenet_dataset
+            train_dataset = glob_func(args.train_glob,
+                                      args.preprocess_threads, 
+                                      args.patchsize, 
+                                      args.batchsize)
             if args.val_gap != 0:
-                tf.set_random_seed(1234)
-                val_files=glob.glob(args.val_glob)
-                if not val_files:
-                    raise RuntimeError(
-                            "No validation images found with glob '{}'.".format(args.val_glob))
-                
-                val_dataset=tf.data.Dataset.from_tensor_slices(val_files)
-                val_dataset=val_dataset.repeat()
-                val_dataset=val_dataset.map(
-                        read_png, num_parallel_calls=args.preprocess_threads)
-                val_dataset=val_dataset.map(lambda x: tf.random_crop(x, (512, 512, 3)))
-                val_dataset=val_dataset.batch(1)
-                val_dataset=val_dataset.prefetch(32)
+                val_dataset = glob_func(args.val_glob, 
+                                        args.preprocess_threads, 
+                                        args.patchsize, 
+                                        args.batchsize)
 
         num_pixels=args.batchsize * args.patchsize ** 2
 
@@ -316,8 +348,9 @@ def train(args):
                 train_y_guidance = tf.reduce_sum(tf.norm(y - 0.5, ord=2, axis=-1, name="guidance_norm"))
             if args.clamp:
                 y = tf.clip_by_value(y, 0, 1)
-            y_tilde, likelihoods=entropy_bottleneck(y, training=True)
-            x_tilde=synthesis_transform(y_tilde)
+            y_tilde, likelihoods = entropy_bottleneck(y, training=True)
+            print("ytilde shape: {}".format(y_tilde.get_shape()))
+            x_tilde = synthesis_transform(y_tilde)
             flow_loss_weight = 0
             # validation 
             if args.val_gap != 0:
@@ -327,7 +360,7 @@ def train(args):
                 y_val_hat, _ = entropy_bottleneck(y_val, training=False)
                 # compute bpp
                 string = entropy_bottleneck.compress(y_val)
-                val_num_pixels = 1 * 512 ** 2
+                val_num_pixels = args.batchsize * args.patchsize ** 2
                 string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
                 val_bpp = tf.math.divide(string_len * 8, val_num_pixels)
                 # y^
@@ -375,12 +408,13 @@ def train(args):
                 # to compute bpp
                 _, likelihoods = entropy_bottleneck(tf.stop_gradient(y), training=True)
             else:
-                y_tilde, likelihoods = entropy_bottleneck(y, training=True)
+                y_tilde, likelihoods = entropy_bottleneck(y * 255 if args.y_scale_up else \
+                                                          y, training=True)
 
             input_rev = []
             if args.ste or args.prepos_ste:
                 y_tilde = m.differentiable_quant(y_tilde)
-            input_rev.append(y_tilde)
+            input_rev.append(y_tilde / 255 if args.y_scale_up else 1)
             for zshape in zshapes:
                 if args.zero_z:
                     input_rev.append(tf.zeros(shape=zshape))
@@ -419,7 +453,7 @@ def train(args):
 
                 # compute bpp
                 string = entropy_bottleneck.compress(y_val)
-                val_num_pixels = 1 * 512 ** 2
+                val_num_pixels = args.batchsize * args.patchsize ** 2
                 string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
                 val_bpp = tf.math.divide(string_len * 8, val_num_pixels)
                 # y^, z^
@@ -443,7 +477,7 @@ def train(args):
                     string_base = entropy_bottleneck.compress(y_val_base)
                     string_base_len = tf.cast(tf.strings.length(string_base), dtype=tf.float32)
                     string_base_len = tf.reduce_sum(string_base_len)
-                    val_base_bpp = tf.math.divide(string_base_len, val_num_pixels)
+                    val_base_bpp = tf.math.divide(string_base_len * 8, val_num_pixels)
 
         if args.guidance_type == "grayscale":
             y_guidance = guidance_transform(x)
@@ -617,7 +651,8 @@ def train(args):
 
         psnr=tf.squeeze(tf.reduce_mean(tf.image.psnr(x_tilde, x, 255)))
         msssim=tf.squeeze(tf.reduce_mean(
-            tf.image.ssim_multiscale(x_tilde, x, 255)))
+            tf.image.ssim_multiscale(x_tilde, x, 255, 
+                filter_size=11 if args.patchsize > 64 else 4)))
         tf.summary.scalar("psnr", psnr)
         tf.summary.scalar("msssim", msssim)
 
@@ -808,7 +843,8 @@ def int_train(args):
         #     y_tilde = m.differentiable_round(y_tilde)
         if args.y_scale_up:
             y_tilde = y_tilde / 255
-        input_rev = [y_tilde, tf.zeros(shape=tf.shape(z))]
+        input_rev = [y_tilde if not args.guidance_type == "baseline" else y_base / 255., 
+                     tf.zeros(shape=tf.shape(z))]
         input_rev = tf.concat(input_rev, axis=-1)
         x_tilde, _ = inv_transform(input_rev, rev=True)
         flow_loss_weight = args.flow_loss_weight
@@ -834,11 +870,11 @@ def int_train(args):
             string = entropy_bottleneck.compress(y_val * (255 if args.y_scale_up else 1))
             val_num_pixels = 1 * 512 ** 2
             string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
-            val_bpp = tf.math.divide(string_len, val_num_pixels)
+            val_bpp = tf.math.divide(string_len * 8, val_num_pixels)
             if args.guidance_type == "baseline":
                 base_string = entropy_bottleneck.compress(base_out)
                 base_string_len = tf.reduce_sum(tf.cast(tf.strings.length(base_string), dtype=tf.float32))
-                base_val_bpp = tf.math.divide(base_string_len, val_num_pixels)
+                base_val_bpp = tf.math.divide(base_string_len * 8, val_num_pixels)
             # y^, 0
             x_val_y_hat_z_0, _ = inv_transform(tf.concat([y_val_hat, z_zeros], axis=-1), rev=True)
             # y, 0
@@ -976,7 +1012,8 @@ def int_train(args):
 
         psnr=tf.squeeze(tf.reduce_mean(tf.image.psnr(x_tilde, x, 255)))
         msssim=tf.squeeze(tf.reduce_mean(
-            tf.image.ssim_multiscale(x_tilde, x, 255)))
+            tf.image.ssim_multiscale(x_tilde, x, 255, 
+                filter_size=11 if args.patchsize > 64 else 4)))
         tf.summary.scalar("psnr", psnr)
         tf.summary.scalar("msssim", msssim)
 
@@ -1161,20 +1198,23 @@ def compress(args):
 
         mse=tf.reduce_mean(tf.squared_difference(x, x_hat))
         rgb_psnr = tf.squeeze(tf.image.psnr(x_hat, x, 255))
-        rgb_msssim = tf.squeeze(tf.image.ssim_multiscale(x_hat, x, 255))
+        rgb_msssim = tf.squeeze(tf.image.ssim_multiscale(x_hat, x, 255, 
+            filter_size=11 if args.patchsize > 64 else 4))
 
         luma_x=tf.slice(tf.image.rgb_to_yuv(x), [0, 0, 0, 0], [-1, -1, -1, 1])
         luma_x_hat=tf.slice(tf.image.rgb_to_yuv(x_hat), [
             0, 0, 0, 0], [-1, -1, -1, 1])
         luma_psnr=tf.squeeze(tf.image.psnr(luma_x_hat, luma_x, 255))
-        luma_msssim=tf.squeeze(tf.image.ssim_multiscale(luma_x_hat, luma_x, 255))
+        luma_msssim=tf.squeeze(tf.image.ssim_multiscale(luma_x_hat, luma_x, 255, 
+            filter_size=11 if args.patchsize > 64 else 4))
 
         chroma_x=tf.slice(tf.image.rgb_to_yuv(x), [0, 0, 0, 1], [-1, -1, -1, 2])
         chroma_x_hat=tf.slice(tf.image.rgb_to_yuv(
             x_hat), [0, 0, 0, 1], [-1, -1, -1, 2])
         chroma_psnr=tf.squeeze(tf.image.psnr(chroma_x_hat, chroma_x, 255))
         chroma_msssim=tf.squeeze(
-                tf.image.ssim_multiscale(chroma_x_hat, chroma_x, 255))
+                tf.image.ssim_multiscale(chroma_x_hat, chroma_x, 255, 
+                    filter_size=11 if args.patchsize > 64 else 4))
 
         total_parameters = 0
         for variable in tf.trainable_variables():
@@ -1340,7 +1380,7 @@ def idn_compress(args):
                     args.pretrain_checkpoint_dir + "/ana_net")
 
             # get the compressed string and the tensor shapes.
-            tensors=[base_string, tf.shape(x)[1:-1], tf.shape(y)[1:-1]]
+            tensors=[string, tf.shape(x)[1:-1], tf.shape(y)[1:-1]]
             arrays=sess.run(tensors)
 
             # Write a binary file with the shape information and the compressed string.
@@ -1421,7 +1461,8 @@ def multi_compress(args):
 
     mse=tf.reduce_mean(tf.squared_difference(x, x_hat))
     psnr=tf.reduce_mean(tf.squeeze(tf.image.psnr(x_hat, x, 255)))
-    msssim=tf.reduce_mean(tf.squeeze(tf.image.ssim_multiscale(x_hat, x, 255)))
+    msssim=tf.reduce_mean(tf.squeeze(tf.image.ssim_multiscale(x_hat, x, 255, 
+        filter_size=11 if args.patchsize > 64 else 4)))
 
     ######### session for compressing multi imgs #########
 
