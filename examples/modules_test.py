@@ -190,7 +190,7 @@ class ModuleTest(tf.test.TestCase):
     #     inputs = m.differentiable_quant(inputs)
     #     print("")
 
-    def test_imagenet64(self):
+    def test_invtransform(self):
         np.random.seed(83243)
         batch_size = 2
         length = 64
@@ -200,17 +200,40 @@ class ModuleTest(tf.test.TestCase):
         inputs = 3. + 0.8 * np.random.randint(low, high, 
                     size=(batch_size, length, length, channels))
         inputs = tf.cast(inputs, tf.float32)
-        analysis_transform = m.AnalysisTransform(256)
-        synthesis_transform = m.SynthesisTransform(256)
-        entropy_bottleneck = tfc.EntropyBottleneck()
-        y = analysis_transform(inputs)
-        # y_tilde, likelihoods = entropy_bottleneck(y, training=True)
-        x_tilde = synthesis_transform(y)
-        psnr=tf.squeeze(tf.reduce_mean(tf.image.psnr(x_tilde, inputs, 255)))
-        msssim=tf.squeeze(tf.reduce_mean(
-            tf.image.ssim_multiscale(x_tilde, inputs, 255)))
+        inv_transform = m.InvCompressionNet(3, 256, "dense", 256, 
+                3, False, True, "bn", 4, "haar", True, False, False)
+
+        outputs, _ = inv_transform(inputs)
+        outputs = outputs[0]
+        recons, _ = inv_transform(outputs, rev=True)
+        recons = recons[0]
+        psnr = tf.image.psnr(recons, inputs, 255)
+        # mean, variance = tf.nn.moments(inputs, axes=[0, 1, 2])
+        # recons_mean, recons_variance = tf.nn.moments(recons, axes=[0, 1, 2])
+        # self.assertAllClose(mean - recons_mean, np.zeros(channels), atol=1e-3)
+        # self.assertAllClose(variance - recons_variance, np.zeros(channels), atol=1e-3)
+
+    # def test_imagenet64(self):
+    #     np.random.seed(83243)
+    #     batch_size = 2
+    #     length = 64
+    #     channels = 3
+    #     low = 0
+    #     high = 256
+    #     inputs = 3. + 0.8 * np.random.randint(low, high, 
+    #                 size=(batch_size, length, length, channels))
+    #     inputs = tf.cast(inputs, tf.float32)
+    #     analysis_transform = m.AnalysisTransform(256)
+    #     synthesis_transform = m.SynthesisTransform(256)
+    #     entropy_bottleneck = tfc.EntropyBottleneck()
+    #     y = analysis_transform(inputs)
+    #     # y_tilde, likelihoods = entropy_bottleneck(y, training=True)
+    #     x_tilde = synthesis_transform(y)
+    #     psnr=tf.squeeze(tf.reduce_mean(tf.image.psnr(x_tilde, inputs, 255)))
+    #     msssim=tf.squeeze(tf.reduce_mean(
+    #         tf.image.ssim_multiscale(x_tilde, inputs, 255)))
         
-        # self.assertAllClose(recons - inputs, np.zeros_like(inputs), atol=1e-3)
+    #     # self.assertAllClose(recons - inputs, np.zeros_like(inputs), atol=1e-3)
         
 
 if __name__ == '__main__':

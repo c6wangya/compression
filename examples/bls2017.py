@@ -239,7 +239,6 @@ def glob_dataset(file_glob, threads, patch_size, batch_size):
             buffer_size=len(files)).repeat()
     dataset = dataset.map(
             read_png, num_parallel_calls=threads)
-    scale = 1
     dataset = dataset.map(
             lambda x: tf.random_crop(x, (patch_size, patch_size, 3)))
     dataset = dataset.batch(batch_size)
@@ -300,7 +299,7 @@ def train(args):
         num_pixels=args.batchsize * args.patchsize ** 2
 
         # Get training patch from dataset.
-        x=train_dataset.make_one_shot_iterator().get_next()
+        x = train_dataset.make_one_shot_iterator().get_next()
 
         # Get validation data from dataset
         if args.val_gap != 0:
@@ -329,7 +328,10 @@ def train(args):
                         kernel_size=args.kernel_size, residual=args.residual, 
                         nin=args.nin, norm=args.norm, n_ops=args.n_ops, 
                         downsample_type=args.downsample_type, inv_conv=(not args.non1x1), 
-                        use_norm=args.use_norm, int_flow=args.int_flow)
+                        inv_conv_init=args.inv_conv_init, use_norm=args.use_norm, int_flow=args.int_flow)
+                    
+                3, 256, "dense", 256, 2, False, True, "bn", 4, "haar", True
+
             if args.guidance_type == "baseline_pretrain":
                 analysis_transform = m.AnalysisTransform(args.channel_out[0])
                 synthesis_transform = m.SynthesisTransform(args.channel_out[0])
@@ -384,12 +386,11 @@ def train(args):
                 z = out[:, :, :, args.channel_out[-1] - 1:]
             else:
                 z = out[:, :, :, args.channel_out[-1]:]
-            print(z.get_shape())
             # z = print_act_stats(z, "z_{}".format(i))
             zshapes.append(tf.shape(z))
             # zshapes.append(z)
             # mle of flow 
-            train_flow += tf.reduce_sum(tf.norm(z + epsilon, ord=2, axis=-1, name="last_norm"))
+            train_flow += tf.reduce_sum(tf.norm(z + epsilon, ord=2, name="last_norm") ** 2)
             if args.train_jacobian:
                 train_flow /= -np.log(2) * num_pixels
             
@@ -408,13 +409,17 @@ def train(args):
                 # to compute bpp
                 _, likelihoods = entropy_bottleneck(tf.stop_gradient(y), training=True)
             else:
-                y_tilde, likelihoods = entropy_bottleneck(y * 255 if args.y_scale_up else \
-                                                          y, training=True)
+                y_tilde, likelihoods = entropy_bottleneck(y * (255 if args.y_scale_up else \
+                                                          1), training=True)
 
             input_rev = []
             if args.ste or args.prepos_ste:
                 y_tilde = m.differentiable_quant(y_tilde)
-            input_rev.append(y_tilde / 255 if args.y_scale_up else 1)
+            
+            if args.y_scale_up:
+                assert not args.no_aux and args.guidance_type != "baseline"
+                y_tilde /= 255
+            input_rev.append(y_tilde)
             for zshape in zshapes:
                 if args.zero_z:
                     input_rev.append(tf.zeros(shape=zshape))
@@ -449,10 +454,12 @@ def train(args):
                 y_val = tf.slice(out, [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
                 if args.clamp: 
                     y_val = tf.clip_by_value(y_val, 0, 1)
-                y_val_hat, _ = entropy_bottleneck(y_val, training=False)
+                y_val_hat, _ = entropy_bottleneck(y_val * (255 if args.y_scale_up else 1), training=False)
+                if args.y_scale_up:
+                    y_val_hat /= 255
 
                 # compute bpp
-                string = entropy_bottleneck.compress(y_val)
+                string = entropy_bottleneck.compress(y_val * (255 if args.y_scale_up else 1))
                 val_num_pixels = args.batchsize * args.patchsize ** 2
                 string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
                 val_bpp = tf.math.divide(string_len * 8, val_num_pixels)
@@ -565,15 +572,15 @@ def train(args):
                 img *= 255
                 img_hat=tf.clip_by_value(img_hat, 0, 1)
                 img_hat=tf.round(img_hat * 255)
-                # img = tf.squeeze(img)
-                # img_hat = tf.squeeze(img_hat[-1])
-                if args.command == "inv_train" and \
-                        args.guidance_type != "baseline_pretrain" and \
-                        not args.int_discrete_net:
+                if isinstance(img_hat, list):
                     img_hat = img_hat[-1]
+                img_hat = tf.reshape(img_hat, [-1, int(img.shape[1]), int(img.shape[1]), 3])
+                print("image shape: {} and imghat shape: {}".format(img.get_shape(), img_hat.get_shape()))
                 rgb_psnr = tf.squeeze(tf.reduce_mean(tf.image.psnr(img_hat, img, 255)))
-                luma_img = tf.slice(tf.image.rgb_to_yuv(img), [0, 0, 0, 0], [-1, -1, -1, 1])
-                luma_img_hat = tf.slice(tf.image.rgb_to_yuv(img_hat), [0, 0, 0, 0], [-1, -1, -1, 1])
+                luma_img = tf.image.rgb_to_yuv(img)[:, :, :, 0]
+                luma_img_hat = tf.image.rgb_to_yuv(img_hat)[:, :, :, 0]
+                # luma_img = tf.slice(tf.image.rgb_to_yuv(img), [0, 0, 0, 0], [-1, -1, -1, 1])
+                # luma_img_hat = tf.slice(tf.image.rgb_to_yuv(img_hat), [0, 0, 0, 0], [-1, -1, -1, 1])
                 luma_psnr = tf.squeeze(tf.reduce_mean(tf.image.psnr(luma_img_hat, luma_img, 255)))
                 return rgb_psnr, luma_psnr
             
@@ -703,7 +710,6 @@ def train(args):
                     sess.run(train_op, {main_lr: args.main_lr * lr, 
                                         aux_lr: args.aux_lr * lr})
                     if args.val_gap != 0 and global_iters % args.val_gap == 0:
-                        # for i in range(24)
                         sess.run(val_op)
                         sess.run(val_bpp_op)
                     global_iters += 1
@@ -1754,7 +1760,10 @@ def parse_args(argv):
         cmd.add_argument(
                 "--optimize_separately", action="store_true",
                 help="whether to use optimize main and aux separately.")
-
+        cmd.add_argument(
+                "--inv_conv_init", default="ortho",
+                help="('ortho' or 'identity').")
+                
     # 'compress' subcommand.
     compress_cmd=subparsers.add_parser(
             "compress",
@@ -1838,6 +1847,9 @@ def parse_args(argv):
         cmd.add_argument(
                 "--non1x1", action="store_true",
                 help="train without 1x1 invertible conv.")
+        cmd.add_argument(
+                "--inv_conv_init", default="ortho",
+                help="('ortho' or 'identity').")
         cmd.add_argument(
                 "--residual", action="store_true",
                 help="use residual block in subnet.")

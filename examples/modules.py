@@ -453,14 +453,17 @@ class HaarDownsampling(keras.layers.Layer):
 
 
 class InvConv(keras.layers.Layer):
-    def __init__(self, channel_in, *args, **kwargs):
+    def __init__(self, channel_in, init="identity", *args, **kwargs):
         super(InvConv, self).__init__(*args, **kwargs)
         self.channel_in = channel_in
 
         self.w_shape = [channel_in, channel_in]
-        # sample a random orthogonal matrix
-        w_init = np.linalg.qr(np.random.randn(
-                *self.w_shape))[0].astype('float32')
+        # sample a random orthogonal matrix or identity
+        if init == "identity":
+            w_init = np.identity(channel_in).astype('float32')
+        else:
+            w_init = np.linalg.qr(np.random.randn(
+                    *self.w_shape))[0].astype('float32')
         w_init = tf.constant_initializer(w_init)
         self.w = self.add_weight(name="W", shape=[channel_in] * 2, 
                 initializer=w_init, trainable=True)
@@ -595,7 +598,7 @@ class IntDiscreteNet(keras.layers.Layer):
 class InvCompressionNet(keras.Model):
     def __init__(self, channel_in, channel_out, blk_type, num_filters, \
                 kernel_size, residual, nin, norm, n_ops, downsample_type, \
-                inv_conv, use_norm=False, int_flow=False):
+                inv_conv, inv_conv_init='identity', use_norm=False, int_flow=False):
         super(InvCompressionNet, self).__init__()
         assert downsample_type == "haar" or downsample_type == "squeeze"
         # self.upscale_log = upscale_log
@@ -627,7 +630,7 @@ class InvCompressionNet(keras.Model):
                 self.operations.append(SqueezeDownsampling())
             current_channel *= 4
         if inv_conv:
-            self.operations.append(InvConv(current_channel))
+            self.operations.append(InvConv(current_channel, inv_conv_init))
             if use_norm:
                 self.operations.append(MultiActNorm(split_ratio=3))
         self.operations.append(self.coupling_layer(self.func, 3, 
@@ -640,7 +643,7 @@ class InvCompressionNet(keras.Model):
             self.operations.append(SqueezeDownsampling())
         current_channel *= 4
         if inv_conv:
-            self.operations.append(InvConv(current_channel))
+            self.operations.append(InvConv(current_channel, inv_conv_init))
             if use_norm:
                 self.operations.append(MultiActNorm(split_ratio=3))
         self.operations.append(self.coupling_layer(self.func, 3, 
@@ -653,7 +656,7 @@ class InvCompressionNet(keras.Model):
             self.operations.append(SqueezeDownsampling())
         current_channel *= 4
         if inv_conv:
-            self.operations.append(InvConv(current_channel))
+            self.operations.append(InvConv(current_channel, inv_conv_init))
             if use_norm:
                 self.operations.append(MultiActNorm(split_ratio=3))
         self.operations.append(self.coupling_layer(self.func, 3, 
@@ -665,15 +668,20 @@ class InvCompressionNet(keras.Model):
         out = []
         jacobian = 0
         if not rev:
-            xx = x[-1]
+            if isinstance(x, list):
+                xx = x[-1]
+            else:
+                xx = x
             for i in range(len(self.operations)):
                 xx = self.operations[i](xx, rev)
                 jacobian += self.operations[i].jacobian(xx, rev)
             # assert xx.get_shape()[-1] == 768 and xx.get_shape()[-2] == 16, \
                 # "x shape is {}\n".format(xx.get_shape())
         else:
-            if x[-2].get_shape()[-1] != 1:
+            if isinstance(x, list) and x[-2].get_shape()[-1] != 1:
                 xx = tf.concat([x[-1], x[-2]], axis=-1)
+            else:
+                xx = x
             for i in reversed(range(len(self.operations))):
                 xx = self.operations[i](xx, rev)
                 jacobian += self.operations[i].jacobian(xx, rev)
