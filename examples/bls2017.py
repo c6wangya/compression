@@ -258,15 +258,17 @@ def glob_imagenet_dataset(file_glob, threads, patch_size, batch_size):
                     x[:, patch_size**2:patch_size**2*2], 
                     x[:, patch_size**2*2:]))
         x = x.reshape((x.shape[0], patch_size, patch_size, 3))
-        xs.append(x)
-    x = np.concatenate(xs, 0)
-    x = [x[i, ...] for i in range(x.shape[0])]
+        x = [x[i, ...] for i in range(x.shape[0])]
+        xs += x
+        # xs.append(x)
+    # x = np.concatenate(xs, 0)
+    # x = [x[i, ...] for i in range(x.shape[0])]
     def gen():
-        for img in x:
+        for img in xs:
             yield img
     dataset = tf.data.Dataset.from_generator(gen, tf.float32, 
             tf.TensorShape([patch_size, patch_size, 3]))
-    dataset = dataset.shuffle(buffer_size=len(x)).repeat()
+    dataset = dataset.shuffle(buffer_size=len(xs)).repeat()
     dataset = dataset.map(read_imagenet64, num_parallel_calls=threads)
     dataset = dataset.batch(batch_size)
     dataset = dataset.prefetch(32)
@@ -282,7 +284,7 @@ def train(args):
 
     with tf.Graph().as_default() as graph:
         # Create input data pipeline.
-        with tf.device("/cpu:{}".format(args.gpu_device)):
+        with tf.device("/cpu:0"):
             tf.set_random_seed(1234)
             glob_func = glob_dataset if args.patchsize == 256 \
                     else glob_imagenet_dataset
@@ -513,10 +515,11 @@ def train(args):
             train_jac = 0
 
         # The rate-distortion cost.
+        decay_factor = tf.placeholder("float")
         train_loss = args.lmbda * train_mse + \
                     args.beta * train_bpp + \
                     flow_loss_weight * (train_flow + train_jac) + \
-                    args.y_guidance_weight * train_y_guidance
+                    args.y_guidance_weight * decay_factor * train_y_guidance
         # train_loss = print_act_stats(train_loss, "overall train loss")
         
         if args.command == "train" or "baseline" not in args.guidance_type:
@@ -707,11 +710,13 @@ def train(args):
                                      args.lr_warmup_steps, 
                                      args.lr_min_ratio, 
                                      args.lr_decay)
+                    df = df_schedule(global_iters, args.df_iter, args.end_iter)
                     sess.run(train_op, {main_lr: args.main_lr * lr, 
-                                        aux_lr: args.aux_lr * lr})
+                                        aux_lr: args.aux_lr * lr,
+                                        decay_factor: df})
                     if args.val_gap != 0 and global_iters % args.val_gap == 0:
-                        sess.run(val_op)
-                        sess.run(val_bpp_op)
+                        sess.run(val_op, {decay_factor: df})
+                        sess.run(val_bpp_op, {decay_factor: df})
                     global_iters += 1
             else:
                 if args.finetune:
@@ -739,11 +744,13 @@ def train(args):
                                      args.lr_warmup_steps, 
                                      args.lr_min_ratio, 
                                      args.lr_decay)
+                    df = df_schedule(global_iters, args.df_iter, args.end_iter)
                     sess.run(train_op, {main_lr: args.main_lr * lr, 
-                                        aux_lr: args.aux_lr * lr})
+                                        aux_lr: args.aux_lr * lr,
+                                        decay_factor: df})
                     if args.val_gap != 0 and global_iters % args.val_gap == 0:
-                        sess.run(val_op)
-                        sess.run(val_bpp_op)
+                        sess.run(val_op, {decay_factor: df})
+                        sess.run(val_bpp_op, {decay_factor: df})
                     if global_iters % 5000 == 0:
                         if args.guidance_type == "baseline_pretrain":
                             # save analysis, synthesis and entropybottleneck model
