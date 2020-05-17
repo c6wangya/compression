@@ -213,10 +213,11 @@ class SeqBlock(keras.layers.Layer):
 
 
 class DenseLayer(keras.layers.Layer):
-    def __init__(self, channel_out, activation):
+    def __init__(self, channel_out, activation, kernel_size):
         super(DenseLayer, self).__init__()
         self.channel_out = channel_out
         self.activation = activation
+        self.kernel_size = kernel_size
 
     def build(self, input_shape):
         super(DenseLayer, self).build(input_shape)
@@ -229,7 +230,8 @@ class DenseLayer(keras.layers.Layer):
                         padding='same', data_format='channels_last', 
                         kernel_initializer='glorot_normal'), 
                 self.activation(), 
-                keras.layers.Conv2D(filters=self.channel_out, kernel_size=(3, 3),
+                keras.layers.Conv2D(filters=self.channel_out, 
+                        kernel_size=(self.kernel_size, self.kernel_size),
                         padding='same', data_format='channels_last', 
                         kernel_initializer='glorot_normal'),
                 self.activation()
@@ -242,11 +244,12 @@ class DenseLayer(keras.layers.Layer):
         return tf.concat([x, h], axis=-1)
 
 class DenseBlock(keras.layers.Layer):
-    def __init__(self, channel_out, depth=12, activation=keras.layers.LeakyReLU):
+    def __init__(self, channel_out, depth=12, activation=keras.layers.LeakyReLU, kernel_size=3):
         super(DenseBlock, self).__init__()
         self.channel_out = channel_out
         self.depth = depth
         self.activation = activation
+        self.kernel_size = kernel_size
         
     def build(self, input_shape):
         super(DenseBlock, self).build(input_shape)
@@ -256,7 +259,8 @@ class DenseBlock(keras.layers.Layer):
         self.model = keras.Sequential()
         for d in range(self.depth):
             growth = future_growth // (self.depth - d)
-            self.model.add(DenseLayer(growth, self.activation))
+            self.model.add(DenseLayer(growth, self.activation, 
+                            self.kernel_size))
             channel_cur += growth
             future_growth -= growth
         # self.built = True
@@ -335,11 +339,11 @@ class InvBlockExp(keras.layers.Layer):
         self.split_len1 = last_dim // self.channel_split_ratio
         self.split_len2 = last_dim - self.split_len1
         if isinstance(self.func, DenseBlock):
-            self.F = DenseBlock(self.split_len1)
-            self.G = DenseBlock(self.split_len2)
-            self.H = DenseBlock(self.split_len2)
+            self.F = DenseBlock(self.split_len1, kernel_size=self.kernel_size)
+            self.G = DenseBlock(self.split_len2, kernel_size=self.kernel_size)
+            self.H = DenseBlock(self.split_len2, kernel_size=self.kernel_size)
             if self.n_ops == 4:
-                self.I = DenseBlock(self.split_len1)
+                self.I = DenseBlock(self.split_len1, kernel_size=self.kernel_size)
         else:
             self.F = SeqBlock(self.num_filters, self.split_len1, self.kernel_size, 
                               residual=self.residual, nin=self.nin, norm=self.norm)
