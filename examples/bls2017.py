@@ -282,7 +282,7 @@ def train(args):
 
     with tf.Graph().as_default() as graph:
         # Create input data pipeline.
-        with tf.device("/cpu:0"):
+        with tf.device("/cpu:{}".format(args.gpu_device)):
             tf.set_random_seed(1234)
             glob_func = glob_dataset if args.patchsize == 256 \
                     else glob_imagenet_dataset
