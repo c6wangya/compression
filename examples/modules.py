@@ -74,9 +74,17 @@ class AnalysisTransform(keras.layers.Layer):
     def build(self, input_shape):
         self._layers = [
             tfc.SignalConv2D(
-                self.num_filters, (9, 9), name="layer_0", corr=True, strides_down=4,
+                self.num_filters // 8, (5, 5), name="layer_-1", corr=True, strides_down=2,
+                padding="same_zeros", use_bias=True,
+                activation=tfc.GDN(name="gdn_-1")),
+            tfc.SignalConv2D(
+                self.num_filters, (5, 5), name="layer_0", corr=True, strides_down=2,
                 padding="same_zeros", use_bias=True,
                 activation=tfc.GDN(name="gdn_0")),
+            # tfc.SignalConv2D(
+            #     self.num_filters, (9, 9), name="layer_0", corr=True, strides_down=4,
+            #     padding="same_zeros", use_bias=True,
+            #     activation=tfc.GDN(name="gdn_0")),
             tfc.SignalConv2D(
                 self.num_filters, (5, 5), name="layer_1", corr=True, strides_down=2,
                 padding="same_zeros", use_bias=True,
@@ -111,8 +119,16 @@ class SynthesisTransform(keras.layers.Layer):
                 self.num_filters, (5, 5), name="layer_1", corr=False, strides_up=2,
                 padding="same_zeros", use_bias=True,
                 activation=tfc.GDN(name="igdn_1", inverse=True)),
+            # tfc.SignalConv2D(
+            #     3, (9, 9), name="layer_2", corr=False, strides_up=4,
+            #     padding="same_zeros", use_bias=True,
+            #     activation=None),
             tfc.SignalConv2D(
-                3, (9, 9), name="layer_2", corr=False, strides_up=4,
+                self.num_filters // 8, (5, 5), name="layer_2", corr=False, strides_up=2,
+                padding="same_zeros", use_bias=True,
+                activation=tfc.GDN(name="igdn_2", inverse=True)),
+            tfc.SignalConv2D(
+                3, (5, 5), name="layer_3", corr=False, strides_up=2,
                 padding="same_zeros", use_bias=True,
                 activation=None),
         ]
@@ -319,7 +335,7 @@ class IntInvBlock(keras.layers.Layer):
 class InvBlockExp(keras.layers.Layer):
     def __init__(self, func, channel_split_ratio, num_filters=128, 
                  clamp=1., kernel_size=3, residual=False, nin=True, 
-                 norm='bn', n_ops=3):
+                 norm='bn', n_ops=3, depth=12):
         super(InvBlockExp, self).__init__()
         # assert isinstance(func, (DenseBlock, SeqBlock))
         self.func = func
@@ -331,6 +347,7 @@ class InvBlockExp(keras.layers.Layer):
         self.nin = nin
         self.norm = norm
         self.n_ops = n_ops
+        self.depth = depth
 
     def build(self, input_shape):
         super(InvBlockExp, self).build(input_shape)
@@ -339,9 +356,12 @@ class InvBlockExp(keras.layers.Layer):
         self.split_len1 = last_dim // self.channel_split_ratio
         self.split_len2 = last_dim - self.split_len1
         if isinstance(self.func, DenseBlock):
-            self.F = DenseBlock(self.split_len1, kernel_size=self.kernel_size)
-            self.G = DenseBlock(self.split_len2, kernel_size=self.kernel_size)
-            self.H = DenseBlock(self.split_len2, kernel_size=self.kernel_size)
+            self.F = DenseBlock(self.split_len1, depth=self.depth, 
+                                kernel_size=self.kernel_size)
+            self.G = DenseBlock(self.split_len2, depth=self.depth, 
+                                kernel_size=self.kernel_size)
+            self.H = DenseBlock(self.split_len2, depth=self.depth, 
+                                kernel_size=self.kernel_size)
             if self.n_ops == 4:
                 self.I = DenseBlock(self.split_len1, kernel_size=self.kernel_size)
         else:
@@ -602,7 +622,8 @@ class IntDiscreteNet(keras.layers.Layer):
 class InvCompressionNet(keras.Model):
     def __init__(self, channel_in, channel_out, blk_type, num_filters, \
                 kernel_size, residual, nin, norm, n_ops, downsample_type, \
-                inv_conv, inv_conv_init='identity', use_norm=False, int_flow=False):
+                inv_conv, inv_conv_init='identity', use_norm=False, \
+                int_flow=False, depth=12):
         super(InvCompressionNet, self).__init__()
         assert downsample_type == "haar" or downsample_type == "squeeze"
         # self.upscale_log = upscale_log
@@ -640,7 +661,7 @@ class InvCompressionNet(keras.Model):
         self.operations.append(self.coupling_layer(self.func, 3, 
                         num_filters=compute_n_filters(current_channel), 
                         kernel_size=kernel_size, residual=residual, nin=nin, 
-                        norm=norm, n_ops=n_ops))
+                        norm=norm, n_ops=n_ops, depth=depth))
         if downsample_type == "haar":
             self.operations.append(HaarDownsampling(current_channel))
         else:

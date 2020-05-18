@@ -330,7 +330,8 @@ def train(args):
                         kernel_size=args.kernel_size, residual=args.residual, 
                         nin=args.nin, norm=args.norm, n_ops=args.n_ops, 
                         downsample_type=args.downsample_type, inv_conv=(not args.non1x1), 
-                        inv_conv_init=args.inv_conv_init, use_norm=args.use_norm, int_flow=args.int_flow)
+                        inv_conv_init=args.inv_conv_init, use_norm=args.use_norm, 
+                        int_flow=args.int_flow, depth=args.dense_depth)
                     
                 3, 256, "dense", 256, 2, False, True, "bn", 4, "haar", True
 
@@ -669,7 +670,7 @@ def train(args):
         tf.summary.image("original", quantize_image(x))
         tf.summary.image("reconstruction", quantize_image(x_tilde))
         
-        # stats_graph(graph)
+        stats_graph(graph)
 
         # total_parameters = 0
         # for variable in tf.trainable_variables():
@@ -1770,6 +1771,9 @@ def parse_args(argv):
         cmd.add_argument(
                 "--inv_conv_init", default="ortho",
                 help="('ortho' or 'identity').")
+        cmd.add_argument(
+                "--dense_depth", type=int, default=12,
+                help="num of depth")
                 
     # 'compress' subcommand.
     compress_cmd=subparsers.add_parser(
