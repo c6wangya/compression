@@ -674,7 +674,7 @@ class InvCompressionNet(keras.Model):
         self.operations.append(self.coupling_layer(self.func, 3, 
                         num_filters=compute_n_filters(current_channel), 
                         kernel_size=kernel_size, residual=residual, nin=nin, 
-                        norm=norm, n_ops=n_ops))
+                        norm=norm, n_ops=n_ops, depth=depth))
         if downsample_type == "haar":
             self.operations.append(HaarDownsampling(current_channel))
         else:
@@ -687,7 +687,7 @@ class InvCompressionNet(keras.Model):
         self.operations.append(self.coupling_layer(self.func, 3, 
                         num_filters=compute_n_filters(current_channel), 
                         kernel_size=kernel_size, residual=residual, nin=nin, 
-                        norm=norm, n_ops=n_ops))
+                        norm=norm, n_ops=n_ops, depth=depth))
         
     def call(self, x, rev=False):
         out = []
