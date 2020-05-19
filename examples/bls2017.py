@@ -407,21 +407,22 @@ def train(args):
                 y = m.differentiable_quant(y)
             
             if args.no_aux and args.guidance_type == "baseline":
-                y_tilde, likelihoods = entropy_bottleneck(tf.stop_gradient(y_base), training=True)
+                y_tilde_scaled, likelihoods = entropy_bottleneck(tf.stop_gradient(y_base), training=True)
             elif args.no_aux:
                 # to compute bpp
                 _, likelihoods = entropy_bottleneck(tf.stop_gradient(y), training=True)
             else:
-                y_tilde, likelihoods = entropy_bottleneck(y * (255 if args.y_scale_up else \
+                y_tilde_scaled, likelihoods = entropy_bottleneck(y * (255 if args.y_scale_up else \
                                                           1), training=True)
 
             input_rev = []
             if args.ste or args.prepos_ste:
-                y_tilde = m.differentiable_quant(y_tilde)
+                y_tilde_scaled = m.differentiable_quant(y_tilde_scaled)
             
             if args.y_scale_up:
-                assert not args.no_aux and args.guidance_type != "baseline"
-                y_tilde /= 255
+                y_tilde = y_tilde_scaled / 255
+            else:
+                y_tilde = y_tilde_scaled
             input_rev.append(y_tilde)
             for zshape in zshapes:
                 if args.zero_z:
@@ -508,7 +509,8 @@ def train(args):
         elif args.guidance_type == "likelihood":
             train_y_guidance = entropy_bottleneck.losses[0]
         elif args.guidance_type == "baseline":
-            train_y_guidance = tf.reduce_sum(tf.squared_difference(y, tf.stop_gradient(y_base)))
+            train_y_guidance = tf.reduce_sum(tf.squared_difference(y * (255 if args.y_scale_up else \
+                                                          1), tf.stop_gradient(y_base)))
         else:
             train_y_guidance = 0
 
@@ -703,7 +705,7 @@ def train(args):
         global_iters = 0
         with tf.train.MonitoredTrainingSession(
                     hooks=hooks, checkpoint_dir=args.checkpoint_dir,
-                    save_checkpoint_secs=1000, save_summaries_secs=300) as sess:
+                    save_checkpoint_secs=5000, save_summaries_secs=500) as sess:
             if "baseline" not in args.guidance_type or args.finetune:
                 while not sess.should_stop():
                     lr = lr_schedule(global_iters, 
@@ -853,8 +855,8 @@ def int_train(args):
         if args.y_scale_up:
             y *= 255
         y_tilde, likelihoods = entropy_bottleneck(y, training=True)
-        # if args.ste or args.prepos_ste:
-        #     y_tilde = m.differentiable_round(y_tilde)
+        if args.ste or args.prepos_ste:
+            y_tilde = m.differentiable_round(y_tilde)
         if args.y_scale_up:
             y_tilde = y_tilde / 255
         input_rev = [y_tilde if not args.guidance_type == "baseline" else y_base / 255., 
