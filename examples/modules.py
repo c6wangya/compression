@@ -239,29 +239,25 @@ class DenseLayer(keras.layers.Layer):
         super(DenseLayer, self).build(input_shape)
         input_shape = tf.TensorShape(input_shape)
         last_dim = input_shape[-1]
-        self.model = keras.Sequential
-        (
-            [
-                keras.layers.Conv2D(filters=last_dim, kernel_size=(1, 1),
+        self.conv1 = keras.layers.Conv2D(filters=last_dim, kernel_size=(1, 1),
                         padding='same', data_format='channels_last', 
-                        kernel_initializer='glorot_normal'), 
-                self.activation(), 
-                keras.layers.Conv2D(filters=self.channel_out, 
+                        kernel_initializer='glorot_normal')
+        self.conv2 = keras.layers.Conv2D(filters=self.channel_out, 
                         kernel_size=(self.kernel_size, self.kernel_size),
                         padding='same', data_format='channels_last', 
-                        kernel_initializer='glorot_normal'),
-                self.activation()
-            ]
-        )
-        # self.built = True
+                        kernel_initializer='glorot_normal')
+        self.activation = self.activation()
 
     def call(self, x):
-        h = self.model(x)
-        return tf.concat([x, h], axis=-1)
+        x = self.activation(self.conv1(x))
+        x = self.activation(self.conv2(x))
+        return x
 
 class DenseBlock(keras.layers.Layer):
-    def __init__(self, channel_out, depth=12, activation=keras.layers.LeakyReLU, kernel_size=3):
+    def __init__(self, n_filters, channel_out, depth=8, activation=keras.layers.LeakyReLU, kernel_size=3):
         super(DenseBlock, self).__init__()
+        assert n_filters % depth == 0
+        self.n_filters = n_filters
         self.channel_out = channel_out
         self.depth = depth
         self.activation = activation
@@ -270,27 +266,56 @@ class DenseBlock(keras.layers.Layer):
     def build(self, input_shape):
         super(DenseBlock, self).build(input_shape)
         input_shape = tf.TensorShape(input_shape)
-        channel_cur = input_shape[-1]
-        future_growth = self.channel_out - channel_cur
-        self.model = keras.Sequential()
-        for d in range(self.depth):
-            growth = future_growth // (self.depth - d)
-            self.model.add(DenseLayer(growth, self.activation, 
+        if self.n_filters < self.channel_out:
+            width = self.channel_out // self.depth
+        else:
+            width = self.n_filters // self.depth
+        self.layers = []
+        for _ in range(self.depth):
+            self.layers.append(DenseLayer(width, self.activation, 
                             self.kernel_size))
-            channel_cur += growth
-            future_growth -= growth
-        # self.built = True
+        self.last_layer = DenseLayer(self.channel_out, self.activation, 
+                            self.kernel_size)
         
     def call(self, x):
-        return self.model(x)
+        xs = [x]
+        for l in self.layers:
+            out = l(tf.concat(xs, -1))
+            xs.append(out)
+        return self.last_layer(tf.concat(xs, -1))
+
+# class DenseBlock(keras.layers.Layer):
+#     def __init__(self, channel_out, gc=8, *args, **kwargs):
+#         super(DenseBlock, self).__init__(*args, **kwargs)
+#         self.conv1 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5), 
+#             padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
+#         self.conv2 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5),
+#             padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
+#         self.conv3 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5),
+#             padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
+#         self.conv4 = keras.layers.Conv2D(filters=gc, kernel_size=(5, 5),
+#             padding='same', data_format='channels_last', kernel_initializer='glorot_normal')
+#         self.conv5 = keras.layers.Conv2D(filters=channel_out, kernel_size=(5, 5),
+#             padding='same', data_format='channels_last', kernel_initializer='zeros')
+#         self.lrelu = keras.layers.LeakyReLU(0.2)
+
+#     def call(self, x):
+#         x1 = self.conv1(x)
+#         x1 = self.lrelu(x1)
+#         # x1 = self.lrelu(self.conv1(x))
+#         x2 = self.lrelu(self.conv2(tf.concat([x, x1], -1)))
+#         x3 = self.lrelu(self.conv3(tf.concat([x, x1, x2], -1)))
+#         x4 = self.lrelu(self.conv4(tf.concat([x, x1, x2, x3], -1)))
+#         x5 = self.conv5(tf.concat([x, x1, x2, x3, x4], -1))
+#         return x5
 
 
 class IntInvBlock(keras.layers.Layer):
-    def __init__(self, func, channel_split_ratio, num_filters=128, 
+    def __init__(self, blk_type, channel_split_ratio, num_filters=128, 
                  clamp=1., kernel_size=3, residual=False, nin=True, 
                  norm='bn', n_ops=3):
         super(IntInvBlock, self).__init__()
-        self.func = func
+        self.blk_type = blk_type
         self.channel_split_ratio = channel_split_ratio
         self.num_filters = num_filters
     
@@ -301,9 +326,9 @@ class IntInvBlock(keras.layers.Layer):
         # print(last_dim)
         self.split_len1 = last_dim // self.channel_split_ratio
         self.split_len2 = last_dim - self.split_len1
-        if isinstance(self.func, DenseBlock):
-            self.F = DenseBlock(self.split_len1)
-            self.G = DenseBlock(self.split_len2)
+        if self.blk_type == 'dense':
+            self.F = DenseBlock(self.num_filters, self.split_len1)
+            self.G = DenseBlock(self.num_filters, self.split_len2)
         else:
             self.F = SeqBlock(self.num_filters, self.split_len1)
             self.G = SeqBlock(self.num_filters, self.split_len2)
@@ -333,12 +358,11 @@ class IntInvBlock(keras.layers.Layer):
 
 
 class InvBlockExp(keras.layers.Layer):
-    def __init__(self, func, channel_split_ratio, num_filters=128, 
+    def __init__(self, blk_type, channel_split_ratio, num_filters=128, 
                  clamp=1., kernel_size=3, residual=False, nin=True, 
                  norm='bn', n_ops=3, depth=12):
         super(InvBlockExp, self).__init__()
-        # assert isinstance(func, (DenseBlock, SeqBlock))
-        self.func = func
+        self.blk_type = blk_type
         self.channel_split_ratio = channel_split_ratio
         self.num_filters = num_filters
         self.clamp = clamp
@@ -355,15 +379,15 @@ class InvBlockExp(keras.layers.Layer):
         last_dim = input_shape[-1]
         self.split_len1 = last_dim // self.channel_split_ratio
         self.split_len2 = last_dim - self.split_len1
-        if isinstance(self.func, DenseBlock):
-            self.F = DenseBlock(self.split_len1, depth=self.depth, 
-                                kernel_size=self.kernel_size)
-            self.G = DenseBlock(self.split_len2, depth=self.depth, 
-                                kernel_size=self.kernel_size)
-            self.H = DenseBlock(self.split_len2, depth=self.depth, 
-                                kernel_size=self.kernel_size)
+        if self.blk_type == 'dense':
+            self.F = DenseBlock(self.num_filters, self.split_len1, 
+                                depth=self.depth, kernel_size=self.kernel_size)
+            self.G = DenseBlock(self.num_filters, self.split_len2, 
+                                depth=self.depth, kernel_size=self.kernel_size)
+            self.H = DenseBlock(self.num_filters, self.split_len2, 
+                                depth=self.depth, kernel_size=self.kernel_size)
             if self.n_ops == 4:
-                self.I = DenseBlock(self.split_len1, kernel_size=self.kernel_size)
+                self.I = DenseBlock(self.num_filters, self.split_len1, kernel_size=self.kernel_size)
         else:
             self.F = SeqBlock(self.num_filters, self.split_len1, self.kernel_size, 
                               residual=self.residual, nin=self.nin, norm=self.norm)
@@ -570,7 +594,7 @@ class IntDiscreteNet(keras.layers.Layer):
                 downsample_type, n_levels, n_flows):
         super(IntDiscreteNet, self).__init__()
         self.num_filters = num_filters
-        self.func = DenseBlock if blk_type == 'dense' else SeqBlock
+        self.blk_type = blk_type
         self.channel_split_ratio = 2
         self.func_downsample = HaarDownsampling if downsample_type == 'haar' \
                 else SqueezeDownsampling
@@ -590,7 +614,7 @@ class IntDiscreteNet(keras.layers.Layer):
         for level in range(self.n_levels):
             for _ in range(self.n_flows):
                 # self.operations.append(Permute())
-                self.operations.append(IntInvBlock(self.func, 
+                self.operations.append(IntInvBlock(self.blk_type, 
                                             self.channel_split_ratio, 
                                             num_filters=self.num_filters))
                 self.num_ops += 1
@@ -646,7 +670,6 @@ class InvCompressionNet(keras.Model):
             return n_filters
 
         self.coupling_layer = InvBlockExp if not int_flow else IntInvBlock
-        self.func = DenseBlock if blk_type == 'dense' else SeqBlock
         current_channel = self.channel_in
         for _ in range(2):
             if downsample_type == "haar":
@@ -658,7 +681,7 @@ class InvCompressionNet(keras.Model):
             self.operations.append(InvConv(current_channel, inv_conv_init))
             if use_norm:
                 self.operations.append(MultiActNorm(split_ratio=3))
-        self.operations.append(self.coupling_layer(self.func, 3, 
+        self.operations.append(self.coupling_layer(blk_type, 3, 
                         num_filters=compute_n_filters(current_channel), 
                         kernel_size=kernel_size, residual=residual, nin=nin, 
                         norm=norm, n_ops=n_ops, depth=depth))
@@ -671,7 +694,7 @@ class InvCompressionNet(keras.Model):
             self.operations.append(InvConv(current_channel, inv_conv_init))
             if use_norm:
                 self.operations.append(MultiActNorm(split_ratio=3))
-        self.operations.append(self.coupling_layer(self.func, 3, 
+        self.operations.append(self.coupling_layer(blk_type, 3, 
                         num_filters=compute_n_filters(current_channel), 
                         kernel_size=kernel_size, residual=residual, nin=nin, 
                         norm=norm, n_ops=n_ops, depth=depth))
@@ -684,7 +707,7 @@ class InvCompressionNet(keras.Model):
             self.operations.append(InvConv(current_channel, inv_conv_init))
             if use_norm:
                 self.operations.append(MultiActNorm(split_ratio=3))
-        self.operations.append(self.coupling_layer(self.func, 3, 
+        self.operations.append(self.coupling_layer(blk_type, 3, 
                         num_filters=compute_n_filters(current_channel), 
                         kernel_size=kernel_size, residual=residual, nin=nin, 
                         norm=norm, n_ops=n_ops, depth=depth))
