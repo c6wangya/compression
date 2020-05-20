@@ -296,7 +296,7 @@ def train(args):
                 val_dataset = glob_func(args.val_glob, 
                                         args.preprocess_threads, 
                                         args.patchsize, 
-                                        args.batchsize)
+                                        args.batchsize * 4)
 
         num_pixels=args.batchsize * args.patchsize ** 2
 
@@ -365,7 +365,7 @@ def train(args):
                 y_val_hat, _ = entropy_bottleneck(y_val, training=False)
                 # compute bpp
                 string = entropy_bottleneck.compress(y_val)
-                val_num_pixels = args.batchsize * args.patchsize ** 2
+                val_num_pixels = args.batchsize * 4 * args.patchsize ** 2
                 string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
                 val_bpp = tf.math.divide(string_len * 8, val_num_pixels)
                 # y^
@@ -464,7 +464,7 @@ def train(args):
 
                 # compute bpp
                 string = entropy_bottleneck.compress(y_val * (255 if args.y_scale_up else 1))
-                val_num_pixels = args.batchsize * args.patchsize ** 2
+                val_num_pixels = args.batchsize * 4 * args.patchsize ** 2
                 string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
                 val_bpp = tf.math.divide(string_len * 8, val_num_pixels)
                 # y^, z^
