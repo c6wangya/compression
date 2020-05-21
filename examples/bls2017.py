@@ -342,8 +342,6 @@ def train(args):
                         inv_conv_init=args.inv_conv_init, use_norm=args.use_norm, 
                         int_flow=args.int_flow, depth=args.dense_depth)
                     
-                3, 256, "dense", 256, 2, False, True, "bn", 4, "haar", True
-
             if args.guidance_type == "baseline_pretrain":
                 analysis_transform = m.AnalysisTransform(args.channel_out[0])
                 synthesis_transform = m.SynthesisTransform(args.channel_out[0])
@@ -924,14 +922,17 @@ def int_train(args):
         if args.train_jacobian:
             train_flow /= -np.log(2) * num_pixels
         y = tf.slice(out, [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
-        # prepos ste
-        # if args.prepos_ste:
-        #     y = m.differentiable_quant(y)
         if args.y_scale_up:
             y *= 255
         y_tilde, likelihoods = entropy_bottleneck(y, training=True)
+        # ste
+        # if (args.ste or args.prepos_ste) and args.y_scale_up:
+        #     y_tilde = m.differentiable_round(y_tilde)
+        # elif args.ste or args.prepos_ste:
+        #     y_tilde = m.differentiable_quant(y_tilde)
         if args.ste or args.prepos_ste:
             y_tilde = m.differentiable_round(y_tilde)
+
         if args.y_scale_up:
             y_tilde = y_tilde / 255
         input_rev = [y_tilde if not args.guidance_type == "baseline" else y_base / 255., 

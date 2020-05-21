@@ -677,6 +677,11 @@ class InvCompressionNet(keras.Model):
             else:
                 self.operations.append(SqueezeDownsampling())
             current_channel *= 4
+            if depth != 12:
+                self.operations.append(self.coupling_layer('dense', 3, 
+                            num_filters=current_channel * depth, 
+                            kernel_size=kernel_size, residual=residual, nin=nin, 
+                            norm=norm, n_ops=n_ops, depth=depth, clamp=clamp))
         if inv_conv:
             self.operations.append(InvConv(current_channel, inv_conv_init))
             if use_norm:
