@@ -647,7 +647,7 @@ class InvCompressionNet(keras.Model):
     def __init__(self, channel_in, channel_out, blk_type, num_filters, \
                 kernel_size, residual, nin, norm, n_ops, downsample_type, \
                 inv_conv, inv_conv_init='identity', use_norm=False, \
-                int_flow=False, depth=12):
+                int_flow=False, depth=12, clamp=1.):
         super(InvCompressionNet, self).__init__()
         assert downsample_type == "haar" or downsample_type == "squeeze"
         # self.upscale_log = upscale_log
@@ -684,7 +684,7 @@ class InvCompressionNet(keras.Model):
         self.operations.append(self.coupling_layer(blk_type, 3, 
                         num_filters=compute_n_filters(current_channel), 
                         kernel_size=kernel_size, residual=residual, nin=nin, 
-                        norm=norm, n_ops=n_ops, depth=depth))
+                        norm=norm, n_ops=n_ops, depth=depth, clamp=clamp))
         if downsample_type == "haar":
             self.operations.append(HaarDownsampling(current_channel))
         else:
@@ -697,7 +697,7 @@ class InvCompressionNet(keras.Model):
         self.operations.append(self.coupling_layer(blk_type, 3, 
                         num_filters=compute_n_filters(current_channel), 
                         kernel_size=kernel_size, residual=residual, nin=nin, 
-                        norm=norm, n_ops=n_ops, depth=depth))
+                        norm=norm, n_ops=n_ops, depth=depth, clamp=clamp))
         if downsample_type == "haar":
             self.operations.append(HaarDownsampling(current_channel))
         else:
@@ -710,7 +710,7 @@ class InvCompressionNet(keras.Model):
         self.operations.append(self.coupling_layer(blk_type, 3, 
                         num_filters=compute_n_filters(current_channel), 
                         kernel_size=kernel_size, residual=residual, nin=nin, 
-                        norm=norm, n_ops=n_ops, depth=depth))
+                        norm=norm, n_ops=n_ops, depth=depth, clamp=clamp))
         
     def call(self, x, rev=False):
         out = []
