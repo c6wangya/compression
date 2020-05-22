@@ -255,7 +255,7 @@ def train(args):
                 val_dataset=val_dataset.map(
                         read_png, num_parallel_calls=args.preprocess_threads)
                 val_dataset=val_dataset.map(lambda x: tf.random_crop(x, (512, 512, 3)))
-                val_dataset=val_dataset.batch(1)
+                val_dataset=val_dataset.batch(24)
                 val_dataset=val_dataset.prefetch(32)
 
         num_pixels=args.batchsize * args.patchsize ** 2
@@ -273,7 +273,7 @@ def train(args):
             x = tf.add(x, tf.random_uniform(tf.shape(x), 0, 1.))
 
         # Instantiate model.
-        entropy_bottleneck=tfc.EntropyBottleneck(noise=(not args.quant_grad))
+        entropy_bottleneck=tfc.EntropyBottleneck()
         if args.command == "train":
             print("training!")
             analysis_transform=m.AnalysisTransform(args.num_filters)
@@ -315,7 +315,7 @@ def train(args):
                 y_val_hat, _ = entropy_bottleneck(y_val, training=False)
                 # compute bpp
                 string = entropy_bottleneck.compress(y_val)
-                val_num_pixels = 1 * 512 ** 2
+                val_num_pixels = 24 * 512 ** 2
                 string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
                 val_bpp = tf.math.divide(string_len * 8, val_num_pixels)
                 # y^
@@ -402,7 +402,7 @@ def train(args):
 
                 # compute bpp
                 string = entropy_bottleneck.compress(y_val)
-                val_num_pixels = 1 * 512 ** 2
+                val_num_pixels = 24 * 512 ** 2
                 string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32))
                 val_bpp = tf.math.divide(string_len * 8, val_num_pixels)
                 # y^, z^
@@ -663,9 +663,9 @@ def train(args):
                 if args.guidance_type == "baseline":
                     # load analysis and entropybottleneck model
                     restore_weights(analysis_saver, get_session(sess), 
-                            args.pretrain_checkpoint_dir + "/ana_net")
+                           args.pretrain_checkpoint_dir + "/ana_net")
                     restore_weights(entropy_saver, get_session(sess), 
-                            args.pretrain_checkpoint_dir + "/entro_net")
+                           args.pretrain_checkpoint_dir + "/entro_net")
                 while not sess.should_stop():
                     lr = lr_schedule(global_iters, 
                                      args.lr_scheduler, 
@@ -710,7 +710,7 @@ def compress(args):
         x = tf.random_crop(x, (1, 256, 256, 3))
 
         # Instantiate model.
-        entropy_bottleneck=tfc.EntropyBottleneck(noise=(not args.quant_grad))
+        entropy_bottleneck=tfc.EntropyBottleneck()
         if not args.invnet:
             analysis_transform=m.AnalysisTransform(args.num_filters)
             synthesis_transform=m.SynthesisTransform(args.num_filters)
