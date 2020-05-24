@@ -631,7 +631,7 @@ def train(args):
 
         with tf.train.MonitoredTrainingSession(
                     hooks=hooks, checkpoint_dir=args.checkpoint_dir,
-                    save_checkpoint_secs=1000, save_summaries_secs=300) as sess:
+                    save_checkpoint_secs=5000, save_summaries_secs=300) as sess:
             if "baseline" not in args.guidance_type or args.finetune:
                 while not sess.should_stop():
                     lr = lr_schedule(global_iters, 
@@ -647,20 +647,19 @@ def train(args):
                         sess.run(val_bpp_op)
                     global_iters += 1
             else:
-                if args.finetune:
-                    if args.guidance_type == "baseline_pretrain":
-                        # load analysis, synthesis and entropybottleneck model
-                        restore_weights(synthesis_saver, get_session(sess), 
-                                args.pretrain_checkpoint_dir + "/syn_net")
-                        restore_weights(analysis_saver, get_session(sess), 
-                                args.pretrain_checkpoint_dir + "/ana_net")
-                        restore_weights(entropy_saver, get_session(sess), 
-                                args.pretrain_checkpoint_dir + "/entro_net")
-                    elif args.guidance_type == "baseline":
-                        # load invertible model
-                        restore_weights(inv_saver, get_session(sess), 
-                                args.pretrain_checkpoint_dir + "/inv_net")
-                if args.guidance_type == "baseline":
+                    # if args.guidance_type == "baseline_pretrain":
+                    #     # load analysis, synthesis and entropybottleneck model
+                    #     restore_weights(synthesis_saver, get_session(sess), 
+                    #             args.pretrain_checkpoint_dir + "/syn_net")
+                    #     restore_weights(analysis_saver, get_session(sess), 
+                    #             args.pretrain_checkpoint_dir + "/ana_net")
+                    #     restore_weights(entropy_saver, get_session(sess), 
+                    #             args.pretrain_checkpoint_dir + "/entro_net")
+                    # elif args.guidance_type == "baseline":
+                    #     # load invertible model
+                    #     restore_weights(inv_saver, get_session(sess), 
+                    #             args.pretrain_checkpoint_dir + "/inv_net")
+                if not args.finetune and args.guidance_type == "baseline":
                     # load analysis and entropybottleneck model
                     restore_weights(analysis_saver, get_session(sess), 
                            args.pretrain_checkpoint_dir + "/ana_net")
