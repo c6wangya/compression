@@ -196,7 +196,7 @@ def differentiable_round(x):
     return tf.round(x), grad
 
 
-def lr_schedule(step, mode, warmup_steps=10000, min_ratio=0.1, decay=0.999995):
+def lr_schedule(step, mode, warmup_steps=10000, decay=0.999995):
     assert mode == 'constant' or mode == 'scheduled'
     if mode == 'scheduled':
         global curr_lr
@@ -627,7 +627,7 @@ def train(args):
                 synthesis_saver = tf.train.Saver(synthesis_transform.trainable_variables, max_to_keep=1)
             elif args.guidance_type == "baseline":
                 inv_saver = tf.train.Saver(inv_transform.trainable_variables, max_to_keep=1)
-            global_iters = 0
+        global_iters = 0
 
         with tf.train.MonitoredTrainingSession(
                     hooks=hooks, checkpoint_dir=args.checkpoint_dir,
@@ -637,7 +637,6 @@ def train(args):
                     lr = lr_schedule(global_iters, 
                                      args.lr_scheduler, 
                                      args.lr_warmup_steps, 
-                                     args.lr_min_ratio, 
                                      args.lr_decay)
                     sess.run(train_op, {main_lr: args.main_lr * lr, 
                                         aux_lr: args.aux_lr * lr})
@@ -669,7 +668,6 @@ def train(args):
                     lr = lr_schedule(global_iters, 
                                      args.lr_scheduler, 
                                      args.lr_warmup_steps, 
-                                     args.lr_min_ratio, 
                                      args.lr_decay)
                     sess.run(train_op, {main_lr: args.main_lr * lr, 
                                         aux_lr: args.aux_lr * lr})
