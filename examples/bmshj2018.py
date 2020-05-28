@@ -286,7 +286,7 @@ def train(args):
                     read_png, num_parallel_calls=args.preprocess_threads)
             val_dataset=val_dataset.map(lambda x: tf.random_crop(x, (256, 256, 3)))
             val_dataset=val_dataset.batch(128)
-            val_dataset=val_dataset.prefetch(128)
+            val_dataset=val_dataset.prefetch(512)
                 
     num_pixels = args.batchsize * args.patchsize ** 2
 
@@ -347,7 +347,7 @@ def train(args):
             # compute bpp
             side_string = entropy_bottleneck.compress(z_val)
             string = conditional_bottleneck.compress(y_val)
-            val_num_pixels = 24 * 256 ** 2
+            val_num_pixels = 128 * 256 ** 2
             string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32)) + \
                          tf.reduce_sum(tf.cast(tf.strings.length(side_string), dtype=tf.float32))
             val_bpp = tf.math.divide(string_len * 8, val_num_pixels)
@@ -430,7 +430,7 @@ def train(args):
             # compute bpp
             side_string = entropy_bottleneck.compress(z_val)
             string = conditional_bottleneck.compress(y_val)
-            val_num_pixels = 24 * 256 ** 2
+            val_num_pixels = 128 * 256 ** 2
             string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32)) + \
                          tf.reduce_sum(tf.cast(tf.strings.length(side_string), dtype=tf.float32))
             val_bpp = tf.math.divide(string_len * 8, val_num_pixels)
