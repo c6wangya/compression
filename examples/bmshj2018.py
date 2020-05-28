@@ -284,9 +284,9 @@ def train(args):
             val_dataset=val_dataset.repeat()
             val_dataset=val_dataset.map(
                     read_png, num_parallel_calls=args.preprocess_threads)
-            val_dataset=val_dataset.map(lambda x: tf.random_crop(x, (256, 256, 3)))
-            val_dataset=val_dataset.batch(128)
-            val_dataset=val_dataset.prefetch(512)
+            val_dataset=val_dataset.map(lambda x: tf.random_crop(x, (512, 512, 3)))
+            val_dataset=val_dataset.batch(24)
+            val_dataset=val_dataset.prefetch(64)
                 
     num_pixels = args.batchsize * args.patchsize ** 2
 
@@ -337,22 +337,23 @@ def train(args):
         if args.val_gap != 0:
             # Transform and compress the image.
             y_val = analysis_transform(x_val)
+            y_shape = tf.shape(y_val)
             z_val = hyper_analysis_transform(abs(y_val))
-            z_hat, _ = entropy_bottleneck(z, training=False)
-            sigma = hyper_synthesis_transform(z_hat)
-            sigma = sigma[:, :tf.shape(y_val)[1], :tf.shape(y_val)[2], :]
-            scale_table = np.exp(np.linspace(
+            z_val_hat, _ = entropy_bottleneck(z_val, training=False)
+            sigma_val = hyper_synthesis_transform(z_val_hat)
+            sigma_val = sigma_val[:, :y_shape[1], :y_shape[2], :]
+            val_scale_table = np.exp(np.linspace(
                     np.log(SCALES_MIN), np.log(SCALES_MAX), SCALES_LEVELS))
-            conditional_bottleneck = tfc.GaussianConditional(sigma, scale_table)
+            val_conditional_bottleneck = tfc.GaussianConditional(sigma_val, val_scale_table)
             # compute bpp
             side_string = entropy_bottleneck.compress(z_val)
-            string = conditional_bottleneck.compress(y_val)
-            val_num_pixels = 128 * 256 ** 2
+            string = val_conditional_bottleneck.compress(y_val)
+            val_num_pixels = tf.cast(tf.reduce_prod(tf.shape(x_val)[:-1]), dtype=tf.float32)
             string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32)) + \
                          tf.reduce_sum(tf.cast(tf.strings.length(side_string), dtype=tf.float32))
             val_bpp = tf.math.divide(string_len * 8, val_num_pixels)
             # Transform the quantized image back (if requested).
-            y_val_hat, _ = conditional_bottleneck(y_val, training=False)
+            y_val_hat, _ = val_conditional_bottleneck(y_val, training=False)
             # y^ 
             x_val_hat = synthesis_transform(y_val_hat)
             # y
@@ -419,7 +420,7 @@ def train(args):
             # y hat
             y_val = tf.slice(out[-1], [0, 0, 0, 0], [-1, -1, -1, args.channel_out[-1]])
             z_val = hyper_analysis_transform(abs(y_val))
-            z_hat, _ = entropy_bottleneck(z, training=False)
+            z_hat, _ = entropy_bottleneck(z_val, training=False)
             sigma = hyper_synthesis_transform(z_hat)
             sigma = sigma[:, :tf.shape(y_val)[1], :tf.shape(y_val)[2], :]
             scale_table = np.exp(np.linspace(
@@ -430,7 +431,7 @@ def train(args):
             # compute bpp
             side_string = entropy_bottleneck.compress(z_val)
             string = conditional_bottleneck.compress(y_val)
-            val_num_pixels = 128 * 256 ** 2
+            val_num_pixels = tf.cast(tf.reduce_prod(tf.shape(x_val)[:-1]), dtype=tf.float32)
             string_len = tf.reduce_sum(tf.cast(tf.strings.length(string), dtype=tf.float32)) + \
                          tf.reduce_sum(tf.cast(tf.strings.length(side_string), dtype=tf.float32))
             val_bpp = tf.math.divide(string_len * 8, val_num_pixels)
@@ -569,51 +570,50 @@ def train(args):
     with tf.train.MonitoredTrainingSession(
                 hooks=hooks, checkpoint_dir=args.checkpoint_dir,
                 save_checkpoint_secs=5000, save_summaries_secs=300) as sess:
-        if "baseline" not in args.guidance_type or args.finetune:
-            while not sess.should_stop():
-                lr = lr_schedule(global_iters, 
-                                    args.lr_scheduler, 
-                                    args.lr_warmup_steps, 
-                                    args.lr_decay)
-                sess.run(train_op, {main_lr: args.main_lr * lr, 
-                                    aux_lr: args.aux_lr * lr})
-                if args.val_gap != 0 and global_iters % args.val_gap == 0:
-                    sess.run(val_op)
-                    sess.run(val_bpp_op)
-                global_iters += 1
-        else:
-            if not args.finetune and args.guidance_type == "baseline":
-                # load analysis and entropybottleneck model
-                restore_weights(analysis_saver, get_session(sess), 
-                        args.pretrain_checkpoint_dir + "/ana_net")
-                restore_weights(entropy_saver, get_session(sess), 
-                        args.pretrain_checkpoint_dir + "/entro_net")
-                restore_weights(hyper_analysis_saver, get_session(sess), 
-                        args.pretrain_checkpoint_dir + "/hyper_ana_net")
-                restore_weights(hyper_synthesis_saver, get_session(sess), 
-                        args.pretrain_checkpoint_dir + "/hyper_syn_net")
-            while not sess.should_stop():
-                lr = lr_schedule(global_iters, 
-                                    args.lr_scheduler, 
-                                    args.lr_warmup_steps, 
-                                    args.lr_decay)
-                sess.run(train_op, {main_lr: args.main_lr * lr, 
-                                    aux_lr: args.aux_lr * lr})
-                if args.val_gap != 0 and global_iters % args.val_gap == 0:
-                    sess.run(val_op)
-                    sess.run(val_bpp_op)
-                if global_iters % 5000 == 0:
-                    if args.guidance_type == "baseline_pretrain":
-                        # save analysis, synthesis and entropybottleneck model
-                        save_weights(analysis_saver, get_session(sess), 
-                                args.checkpoint_dir + '/ana_net', global_iters)
-                        save_weights(entropy_saver, get_session(sess), 
-                                args.checkpoint_dir + '/entro_net', global_iters)
-                        save_weights(hyper_analysis_saver, get_session(sess), 
-                                args.checkpoint_dir + '/hyper_ana_net', global_iters)
-                        save_weights(hyper_synthesis_saver, get_session(sess), 
-                                args.checkpoint_dir + '/hyper_syn_net', global_iters)
-                global_iters += 1
+        # if "baseline" not in args.guidance_type or args.finetune:
+        #     while not sess.should_stop():
+        #         lr = lr_schedule(global_iters, 
+        #                             args.lr_scheduler, 
+        #                             args.lr_warmup_steps, 
+        #                             args.lr_decay)
+        #         sess.run(train_op, {main_lr: args.main_lr * lr, 
+        #                             aux_lr: args.aux_lr * lr})
+        #         if args.val_gap != 0 and global_iters % args.val_gap == 0:
+        #             sess.run(val_op)
+        #             sess.run(val_bpp_op)
+        #         global_iters += 1
+        # else:
+        if not args.finetune and args.guidance_type == "baseline":
+            # load analysis and entropybottleneck model
+            restore_weights(analysis_saver, get_session(sess), 
+                    args.pretrain_checkpoint_dir + "/ana_net")
+            restore_weights(entropy_saver, get_session(sess), 
+                    args.pretrain_checkpoint_dir + "/entro_net")
+            restore_weights(hyper_analysis_saver, get_session(sess), 
+                    args.pretrain_checkpoint_dir + "/hyper_ana_net")
+            restore_weights(hyper_synthesis_saver, get_session(sess), 
+                    args.pretrain_checkpoint_dir + "/hyper_syn_net")
+        while not sess.should_stop():
+            lr = lr_schedule(global_iters, 
+                                args.lr_scheduler, 
+                                args.lr_warmup_steps, 
+                                args.lr_decay)
+            sess.run(train_op, {main_lr: args.main_lr * lr, 
+                                aux_lr: args.aux_lr * lr})
+            if args.val_gap != 0 and global_iters % args.val_gap == 0:
+                sess.run(val_op)
+                sess.run(val_bpp_op)
+            if global_iters % 5000 == 0 and args.guidance_type == "baseline_pretrain":
+                # save analysis, synthesis and entropybottleneck model
+                save_weights(analysis_saver, get_session(sess), 
+                        args.checkpoint_dir + '/ana_net', global_iters)
+                save_weights(entropy_saver, get_session(sess), 
+                        args.checkpoint_dir + '/entro_net', global_iters)
+                save_weights(hyper_analysis_saver, get_session(sess), 
+                        args.checkpoint_dir + '/hyper_ana_net', global_iters)
+                save_weights(hyper_synthesis_saver, get_session(sess), 
+                        args.checkpoint_dir + '/hyper_syn_net', global_iters)
+            global_iters += 1
 
 
 def compress(args):
