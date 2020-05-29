@@ -474,19 +474,31 @@ def train(args):
                  flow_loss_weight * (train_flow + train_jac) + \
                  args.y_guidance_weight * train_y_guidance
             
-    tvars = tf.trainable_variables()
-    filtered_vars = [var for var in tvars \
-                if not 'haar_downsampling' in var.name]
+    if args.command == "inv_train" and args.guidance_type == "baseline":
+        main_vars = inv_transform.trainable_variables
+        main_vars = [var for var in main_vars if not 'haar_downsampling' in var.name]
+        aux_vars = hyper_analysis_transform.trainable_variables + \
+                   hyper_synthesis_transform.trainable_variables + \
+                   entropy_bottleneck.trainable_variables + \
+                   main_vars
+    else:
+        main_vars = tf.trainable_variables()
+        aux_vars = tf.trainable_variables()
 
     # Minimize loss and auxiliary loss, and execute update op.
     main_lr = tf.placeholder(tf.float32, [], 'main_lr')
     aux_lr = tf.placeholder(tf.float32, [], 'aux_lr')
     step = tf.train.create_global_step()
     main_optimizer = tf.train.AdamOptimizer(learning_rate=main_lr)
-    main_step = main_optimizer.minimize(train_loss, global_step=step)
+    main_gradients, main_variables = zip(*main_optimizer.compute_gradients(train_loss, main_vars))
+    main_step = main_optimizer.apply_gradients(zip(main_gradients, main_variables), global_step=step)
+    # main_step = main_optimizer.minimize(train_loss, global_step=step)
 
     aux_optimizer = tf.train.AdamOptimizer(learning_rate=aux_lr)
-    aux_step = aux_optimizer.minimize(entropy_bottleneck.losses[0])
+    aux_gradients, aux_variables = zip(*aux_optimizer.compute_gradients(
+            entropy_bottleneck.losses[0], aux_vars))
+    aux_step = aux_optimizer.apply_gradients(zip(aux_gradients, aux_variables))
+    # aux_step = aux_optimizer.minimize(entropy_bottleneck.losses[0])
 
     train_op = tf.group(main_step, aux_step, entropy_bottleneck.updates[0])
     
@@ -549,6 +561,9 @@ def train(args):
             val_bpp_op_list = [val_bpp]
         val_op = tf.group(*val_op_lst)
         val_bpp_op = tf.group(*val_bpp_op_list)
+
+    tf.summary.scalar("main-learning-rates", main_lr)
+    tf.summary.scalar("aux-learning-rates", aux_lr)
 
     tf.summary.scalar("loss", train_loss)
     tf.summary.scalar("bpp", train_bpp)
