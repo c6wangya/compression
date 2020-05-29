@@ -53,11 +53,31 @@ import matplotlib.pyplot as plt
 #     34.33, 
 #     28.55]
 # }
+# data = {
+#     'bpp': [0.2984,
+#     0.4752,
+#     0.5308,
+#     # 0.607,
+#     # 0.6835, 
+#     0.674,
+#     0.7207,
+#     # 0.7323,
+#     0.8232],
+#     'psnr': [29.84,
+#     31.63,
+#     32.24,
+#     # 32.41,
+#     # 33.17,
+#     33.24,
+#     33.89,
+#     # 33.73, 
+#     34.61]
+# }
 data = {
     'bpp': [0.2983,
     0.4773,
     0.539,
-    0.607,
+    # 0.607,
     0.6835, 
     # 0.67,
     # 0.7181,
@@ -66,7 +86,7 @@ data = {
     'psnr': [29.81,
     31.57,
     32.09,
-    32.41,
+    # 32.41,
     33.17,
     # 33.51,
     # 33.96,
@@ -105,25 +125,25 @@ inn_zipped_dict = dict(sorted( inn_zipped_dict.items(), key=lambda d: d[0]))
 print(inn_zipped_dict)
 
 inn_data2 = {
-    'bpp': [0.3095, 
+    'bpp': [0.3047, 
     # 0.4794, 
-    0.5015, 
-    # 0.5064, 
-    0.5584,
-    0.6201, 
-    # 0.6887, 
-    0.7738, 
-    # 0.8811
+    0.4953, 
+    0.5295, 
+    # 0.5584,
+    0.6197, 
+    # 0.7103, 
+    0.7378, 
+    0.7798, 
     ],
-    'psnr': [30.47, 
+    'psnr': [30.59, 
     # 31.92, 
-    32.17, 
-    # 32.17, 
-    32.65, 
-    33.3, 
-    # 33.59, 
-    34.54, 
-    # 35.01
+    32.32, 
+    32.59, 
+    # 32.65, 
+    33.35, 
+    # 33.92, 
+    34.16,
+    34.62, 
     ]
 }
 inn_df2 = DataFrame(inn_data2)
@@ -132,30 +152,36 @@ print(inn_zipped_dict2)
 inn_zipped_dict2 = dict(sorted( inn_zipped_dict2.items(), key=lambda d: d[0]))
 print(inn_zipped_dict2)
 
+for a,b in zip(df['bpp'],df['psnr']):
+    plt.text(a+0.03, b-0.25, '(%.2f,\n %.2f)' % (a, b), ha='center', va= 'bottom',fontsize=7)
+
+for a,b in zip(inn_df2['bpp'],inn_df2['psnr']):
+    plt.text(a-0, b+0.15, '(%.2f,\n %.2f)' % (a, b), ha='center', va= 'bottom',fontsize=7)
+
 plt.plot(list(zipped_dict.keys()), list(zipped_dict.values()), markersize=6, marker='o')
-plt.plot(list(inn_zipped_dict.keys()), list(inn_zipped_dict.values()), markersize=6, marker='o')
+# plt.plot(list(inn_zipped_dict.keys()), list(inn_zipped_dict.values()), markersize=6, marker='o')
 plt.plot(list(inn_zipped_dict2.keys()), list(inn_zipped_dict2.values()), markersize=6, marker='o')
 
 inn_data2 = {
-    'bpp': [0.3095, 
+    'bpp': [0.3047, 
     # 0.4794, 
-    0.5015, 
-    # 0.5064, 
-    0.5584,
-    0.6201, 
-    0.7305, 
-    0.7738, 
-    # 0.8811
+    0.4953, 
+    0.5295, 
+    # 0.5584,
+    0.6197, 
+    # 0.6887, 
+    0.7378, 
+    0.7768, 
     ],
-    'psnr': [30.47, 
+    'psnr': [30.59, 
     # 31.92, 
-    32.17, 
-    # 32.17, 
-    32.65, 
-    33.3, 
-    34.09, 
-    34.54, 
-    # 35.01
+    32.32, 
+    32.59, 
+    # 32.65, 
+    33.35, 
+    # 33.59, 
+    34.16,
+    34.58, 
     ]
 }
 inn_df2 = DataFrame(inn_data2)
@@ -163,7 +189,74 @@ inn_zipped_dict2 = dict(zip(inn_df2['bpp'], inn_df2['psnr']))
 print(inn_zipped_dict2)
 inn_zipped_dict2 = dict(sorted( inn_zipped_dict2.items(), key=lambda d: d[0]))
 print(inn_zipped_dict2)
-plt.plot(list(inn_zipped_dict2.keys()), list(inn_zipped_dict2.values()), markersize=6, marker='o')
+# plt.plot(list(inn_zipped_dict2.keys()), list(inn_zipped_dict2.values()), markersize=6, marker='o')
 
-plt.legend(('baseline', 'inn-fixed-weights', 'inn-adapted-weights'), loc='lower right') 
-plt.savefig('plot_psnr.jpg')
+# plt.legend(('baseline', 'inn-fixed-weights', 'inn-adapted-weights'), loc='lower right') 
+plt.legend(('baseline', 'inn-adapted-weights'), loc='lower right') 
+plt.xlabel('bpp')
+plt.ylabel('luma psnr')
+plt.title('Kodak24',fontsize=12)
+
+plt.savefig('plot_luma_psnr.jpg')
+
+plt.cla()
+
+baseline_rgb = {
+    'bpp': [0.2983,
+    0.4773,
+    0.539,
+    # 0.607,
+    0.6835, 
+    # 0.67,
+    # 0.7181,
+    0.7323,
+    0.8312
+    ],
+    'psnr': [29.3,
+    30.99,
+    31.49,
+    # 32.41,
+    32.54,
+    # 33.51,
+    # 33.96,
+    33.04, 
+    33.87
+    ]
+}
+baseline_rgb_df = DataFrame(baseline_rgb)
+baseline_rgb_zipped_dict2 = dict(zip(baseline_rgb_df['bpp'], baseline_rgb_df['psnr']))
+print(baseline_rgb_zipped_dict2)
+baseline_rgb_zipped_dict2 = dict(sorted( baseline_rgb_zipped_dict2.items(), key=lambda d: d[0]))
+print(baseline_rgb_zipped_dict2)
+plt.plot(list(baseline_rgb_zipped_dict2.keys()), list(baseline_rgb_zipped_dict2.values()), markersize=6, marker='o')
+
+inn_rgb = {
+    'bpp': [0.3047, 
+    0.4953, 
+    0.5295, 
+    0.6197, 
+    0.7378, 
+    0.7798, 
+    ],
+    'psnr': [29.98, 
+    # 31.92, 
+    31.6, 
+    31.9, 
+    32.57, 
+    33.32,
+    33.78, 
+    ]
+}
+
+inn_rgb_df = DataFrame(inn_rgb)
+inn_rgb_zipped_dict2 = dict(zip(inn_rgb_df['bpp'], inn_rgb_df['psnr']))
+print(inn_rgb_zipped_dict2)
+inn_rgb_zipped_dict2 = dict(sorted( inn_rgb_zipped_dict2.items(), key=lambda d: d[0]))
+print(inn_rgb_zipped_dict2)
+plt.plot(list(inn_rgb_zipped_dict2.keys()), list(inn_rgb_zipped_dict2.values()), markersize=6, marker='o')
+
+plt.legend(('baseline', 'inn-adapted-weights'), loc='lower right') 
+plt.xlabel('bpp')
+plt.ylabel('rgb psnr')
+plt.title('Kodak24',fontsize=12)
+plt.savefig('plot_rgb_psnr.jpg')

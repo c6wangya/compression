@@ -305,6 +305,8 @@ def train(args):
     if args.command == "train":
         analysis_transform = AnalysisTransform(args.num_filters)
         synthesis_transform = SynthesisTransform(args.num_filters)
+        hyper_analysis_transform = HyperAnalysisTransform(args.num_filters)
+        hyper_synthesis_transform = HyperSynthesisTransform(args.num_filters)
     else:
         # inv train net
         inv_transform = m.InvCompressionNet(channel_in=3, channel_out=args.channel_out, 
@@ -316,8 +318,12 @@ def train(args):
         if args.guidance_type == "baseline_pretrain":
             analysis_transform = AnalysisTransform(args.channel_out[0])
             synthesis_transform = SynthesisTransform(args.channel_out[0])
+            hyper_analysis_transform = HyperAnalysisTransform(args.channel_out[0])
+            hyper_synthesis_transform = HyperSynthesisTransform(args.channel_out[0])
         elif args.guidance_type == "baseline":
             analysis_transform = AnalysisTransform(args.channel_out[0])
+            hyper_analysis_transform = HyperAnalysisTransform(args.channel_out[0])
+            hyper_synthesis_transform = HyperSynthesisTransform(args.channel_out[0])
 
     # Build autoencoder and hyperprior.
     # Transform Image
