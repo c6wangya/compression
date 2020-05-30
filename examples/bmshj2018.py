@@ -299,8 +299,8 @@ def train(args):
         print(x_val)
 
     # Instantiate model.
-    hyper_analysis_transform = HyperAnalysisTransform(args.num_filters)
-    hyper_synthesis_transform = HyperSynthesisTransform(args.num_filters)
+    #hyper_analysis_transform = HyperAnalysisTransform(args.num_filters)
+    #hyper_synthesis_transform = HyperSynthesisTransform(args.num_filters)
     entropy_bottleneck = tfc.EntropyBottleneck()
     if args.command == "train":
         analysis_transform = AnalysisTransform(args.num_filters)
@@ -588,22 +588,10 @@ def train(args):
         hyper_synthesis_saver = tf.train.Saver(hyper_synthesis_transform.variables, max_to_keep=1)
         entropy_saver = tf.train.Saver(entropy_bottleneck.variables, max_to_keep=1)
     global_iters = 0
+    scaffold = tf.train.Scaffold(saver=tf.train.Saver(max_to_keep=15))
     with tf.train.MonitoredTrainingSession(
                 hooks=hooks, checkpoint_dir=args.checkpoint_dir,
-                save_checkpoint_secs=5000, save_summaries_secs=300) as sess:
-        # if "baseline" not in args.guidance_type or args.finetune:
-        #     while not sess.should_stop():
-        #         lr = lr_schedule(global_iters, 
-        #                             args.lr_scheduler, 
-        #                             args.lr_warmup_steps, 
-        #                             args.lr_decay)
-        #         sess.run(train_op, {main_lr: args.main_lr * lr, 
-        #                             aux_lr: args.aux_lr * lr})
-        #         if args.val_gap != 0 and global_iters % args.val_gap == 0:
-        #             sess.run(val_op)
-        #             sess.run(val_bpp_op)
-        #         global_iters += 1
-        # else:
+                save_checkpoint_secs=3600, save_summaries_secs=300, scaffold=scaffold) as sess:
         if not args.finetune and args.guidance_type == "baseline":
             # load analysis and entropybottleneck model
             restore_weights(analysis_saver, get_session(sess), 
